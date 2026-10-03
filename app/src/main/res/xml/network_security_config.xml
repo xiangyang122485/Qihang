@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 默认拒绝明文（HTTP）流量。本应用的全部数据源（GitHub 官方 API/codeload、
+         jsDelivr、9 个国内镜像站）均走 HTTPS，无需明文；移除 manifest 的
+         usesCleartextTraffic=true 后由这里统一默认拒绝，缩小攻击面。 -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

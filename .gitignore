@@ -1,0 +1,46 @@
+# ===== Android / Gradle 通用忽略 =====
+*.apk
+*.aar
+*.ap_
+*.aab
+*.dex
+*.class
+bin/
+gen/
+out/
+build/
+.gradle/
+
+# 本地 SDK 路径 / 机器相关配置（含 sdk.dir），绝不入库
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# 设备截图 / 临时预览图（可能含隐私，且为一次性产物）
+screen_*.png
+app-icon-preview.svg
+
+# ===== 本项目私密 / 敏感文件（绝不入库）=====
+# 生产签名 keystore 及配套密码文件
+app/keystore/
+
+# 日志 / 临时 / 工作脚本
+*.log
+_iccheck/
+_icontool.py
+build_*.txt
+
+# OS / 编辑器
+.DS_Store
+Thumbs.db
+
+# WorkBuddy 项目记忆（不应进入源码仓库）
+.workbuddy/

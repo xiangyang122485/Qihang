@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标背景：取用户图标边缘的深岩灰（RGB 87,105,118），与前景满铺图无缝衔接 -->
+<color xmlns:android="http://schemas.android.com/apk/res/android">#576976</color>
