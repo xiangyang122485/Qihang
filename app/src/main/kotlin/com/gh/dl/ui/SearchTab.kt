@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
@@ -26,6 +27,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -34,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -41,9 +44,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gh.dl.data.Search
+import com.gh.dl.data.cleanDesc
 import com.gh.dl.data.MirrorManager
 import com.gh.dl.data.Settings
 
@@ -65,9 +70,20 @@ fun SearchTab() {
                     Text("搜索源", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = vmSearch.searchSource == "github", onClick = { vmSearch.searchSource = "github"; vmParser.applySource(ctx) }, label = { Text("GitHub 源") })
-                        FilterChip(selected = vmSearch.searchSource == "foreign", onClick = { vmSearch.searchSource = "foreign"; vmParser.applySource(ctx) }, label = { Text("外国源") })
-                        FilterChip(selected = vmSearch.searchSource == "domestic", onClick = { vmSearch.searchSource = "domestic"; vmParser.applySource(ctx) }, label = { Text("国内源") })
+                        // 选中即落盘：第五轮删掉了「设置 → 网络」那个统一保存按钮，
+                        // 所有设置都改成就地保存，不然这里换的源重启就丢。
+                        listOf("github" to "GitHub 源", "foreign" to "外国源", "domestic" to "国内源")
+                            .forEach { (id, label) ->
+                                FilterChip(
+                                    selected = vmSearch.searchSource == id,
+                                    onClick = {
+                                        vmSearch.searchSource = id
+                                        Settings.put(ctx, "searchSource", id)
+                                        vmParser.applySource(ctx)
+                                    },
+                                    label = { Text(label) }
+                                )
+                            }
                     }
                     Spacer(Modifier.height(10.dp))
                     Row(
@@ -179,8 +195,9 @@ fun SearchTab() {
         }
 
         // ---- 结果 ----
-        vmSearch.searchResults.forEach { h ->
-            item { SearchResultCard(h) }
+        // 同样给稳定 key：搜索是分页/换关键词追加的，没有 key 时整列卡片会重排
+        items(vmSearch.searchResults, key = { "res-" + it.fullName }) { h ->
+            SearchResultCard(h)
         }
     }
 }
@@ -191,6 +208,7 @@ private fun SearchResultCard(h: Search.Hit) {
     val vmParser = LocalParserVM.current
     val vmSettings = LocalSettingsVM.current
     val vmDownloads = LocalDownloadsVM.current
+    val vmBrowse = LocalBrowseVM.current
 
     val ctx = LocalContext.current
     val badge = when (h.source) {
@@ -236,10 +254,14 @@ private fun SearchResultCard(h: Search.Hit) {
                 }
             }
             Spacer(Modifier.height(4.dp))
+            // 描述是用户自填，常有超长或整块乱码（GitHub API 原样返回），统一清洗后再显示
+            val desc = cleanDesc(h.desc)
             Text(
-                if (h.desc.isNotBlank()) h.desc else "暂无描述",
+                if (desc.isNotBlank()) desc else "暂无描述",
                 fontSize = 12.sp,
-                color = if (h.desc.isNotBlank()) MaterialTheme.colorScheme.onSurfaceVariant
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                color = if (desc.isNotBlank()) MaterialTheme.colorScheme.onSurfaceVariant
                 else MaterialTheme.colorScheme.outline
             )
             Spacer(Modifier.height(6.dp))
@@ -251,7 +273,7 @@ private fun SearchResultCard(h: Search.Hit) {
             ).filter { it.isNotBlank() }.joinToString("  ·  ")
             Text(meta, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
-            // 与解析器页一致：下载（直接进下载页）/ 复制直链 / 分享；点卡片本体仍「查看并解析」。
+            // 与解析器页一致：下载 / 浏览（进浏览页看仓库主页）/ 复制直链 / 分享；点卡片本体仍「查看并解析」。
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -269,6 +291,20 @@ private fun SearchResultCard(h: Search.Hit) {
                         Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("下载", fontSize = 13.sp)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Button(
+                        onClick = { vmBrowse.open(h.htmlUrl) },
+                        enabled = h.htmlUrl.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.accentBlue,
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Filled.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("浏览", fontSize = 13.sp)
                     }
                     Spacer(Modifier.width(4.dp))
                     IconButton(

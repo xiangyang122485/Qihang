@@ -3,8 +3,10 @@ package com.gh.dl.ui
 /**
  * 设置页的类型安全路由。
  *
- * 阶段 4（设置 Tab 去重重构）把一级页压成 4 个分组卡片（网络 / 下载 / 克隆 / 关于），
- * 每个分组点进去是一个二级页；SSH 密钥管理从「克隆」分组进入，线路诊断从「网络」分组进入。
+ * 阶段 4（设置 Tab 去重重构）把一级页压成分组卡片，第五轮再拆成三级：
+ * 设置 → 分组（网络 / 加速 / 下载 / 克隆 …） → 具体页；
+ * 「加速」下面还有第三级（下载加速 / 浏览加速），因为这两套机制完全不相通：
+ * 文件前缀代理不了网页（实测返回它自己的首页），网页镜像又只放行 curl 类 UA。
  * 路由字符串集中在密封接口里，杜绝把页面名写成散落各处的魔法字符串，
  * 也避免与解析/下载/搜索三个主 Tab 的 `when(AppState.tab)` 混在一起。
  *
@@ -17,11 +19,23 @@ sealed interface SettingsRoute {
     /** 设置根列表页（NavHost 起始 destination）：4 个分组卡片 */
     data object Root : SettingsRoute { override val route = "settings_root" }
 
-    /** 网络：线路选择 / 加速代理 / GitHub Token / HTTP 代理 / 线路诊断入口 */
+    /** 网络：线路选择 / GitHub Token / HTTP 代理 / 镜像源管理 / 线路诊断入口 */
     data object Network : SettingsRoute { override val route = "settings_network" }
+
+    /** 加速：一级入口页，下面挂「下载加速」与「浏览加速」两个三级页 */
+    data object Accel : SettingsRoute { override val route = "settings_accel" }
+
+    /** 下载加速（ghproxy 风格文件前缀）：开关 + 前缀增删 + 下载后 SHA256 校验 */
+    data object AccelDownload : SettingsRoute { override val route = "settings_accel_download" }
+
+    /** 浏览加速（githubfast 风格网页镜像站）：开关 + 镜像站增删 + 连通性实测 */
+    data object AccelBrowse : SettingsRoute { override val route = "settings_accel_browse" }
 
     /** 下载：下载引擎 / 存储位置(SAF) / 缓存占用与清除 */
     data object Download : SettingsRoute { override val route = "settings_download" }
+
+    /** 浏览：解析引擎 / 图片方式 / 抓取器 / 链接历史 / 图片缓存（第六轮新增） */
+    data object Browse : SettingsRoute { override val route = "settings_browse" }
 
     /** 克隆：克隆总开关 / Git LFS / 克隆引擎 / SSH 密钥管理入口 */
     data object Clone : SettingsRoute { override val route = "settings_clone" }
@@ -44,6 +58,9 @@ sealed interface SettingsRoute {
     /** 外观：跟随系统 / 浅色 / 深色 */
     data object Appearance : SettingsRoute { override val route = "settings_appearance" }
 
+    /** 开源许可：内置二进制 + JVM 依赖的许可证清单与全文（第九轮新增） */
+    data object Licenses : SettingsRoute { override val route = "settings_licenses" }
+
     /** 权限：通知 / 电池优化 / 安装未知应用 / 存储授权（SAF） */
     data object Permissions : SettingsRoute { override val route = "settings_permissions" }
 }
@@ -59,9 +76,14 @@ fun String.toSettingsRoute(): SettingsRoute = when (this) {
     "about" -> SettingsRoute.About
     "docs" -> SettingsRoute.Docs
     "appearance" -> SettingsRoute.Appearance
+    "licenses" -> SettingsRoute.Licenses
     "permissions" -> SettingsRoute.Permissions
     "clone" -> SettingsRoute.Clone
     "network" -> SettingsRoute.Network
+    "accel" -> SettingsRoute.Accel
+    "accelDownload" -> SettingsRoute.AccelDownload
+    "accelBrowse" -> SettingsRoute.AccelBrowse
     "download" -> SettingsRoute.Download
+    "browse" -> SettingsRoute.Browse
     else -> SettingsRoute.Root
 }

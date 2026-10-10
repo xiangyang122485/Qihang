@@ -1,0 +1,35 @@
+Qihang / GitHub 下载器（com.gh.dl）—— 许可证与第三方组件说明
+============================================================
+
+本应用的源码（app/src/main/kotlin、app/src/main/assets/aria2/cacert.pem 等项目自有文件）
+采用 MIT 许可证发布，全文见本仓库根目录的 LICENSE。
+
+为什么是 MIT 而不是 GPL：APK 里的 GNU wget 与 aria2c 是 GPL 程序，但它们是
+**独立的执行程序**——本应用通过命令行调用（exec）它们，二者只通过进程边界交换
+参数与文件，不构成 GPL 意义上的「衍生作品」，因此 copyleft 不回传到本应用源码。
+libgit2 用的是「GPLv2 + 链接例外」，例外本身明文允许与任何程序组合分发。
+这个口径与 FSF 的 GPL FAQ（「通过命令行/管道交互的程序是独立作品」）一致。
+
+GPL 对被内置的那两份程序仍然有义务，本仓库这样履行：
+  1. 许可证全文随分发包提供：app/src/main/assets/licenses/（GPL-2.0 / GPL-3.0 /
+     Apache-2.0 / MIT / ZLIB / EDL-1.0 / ISC / JSCH-BSD / BOUNCY-CASTLE / BSD-3 /
+     OPENSSL-OLD / LINKING-EXCEPTIONS），App 内「设置 → 开源许可」可逐条查看。
+  2. 逐项声明每个组件的许可证、在 APK 里的形态、以及对应源码从哪拿：
+     见 app/src/main/kotlin/com/gh/dl/ui/settings/LicensesPage.kt 与
+     docs/BUILD-INTERNALS.md。
+  3. 本应用自己**没有修改**任何上游 GPL 源码：wget 是原样源码 + 明确 configure
+     参数静态编译（参数、源码与二进制的 SHA256 全部记录在 docs/BUILD-INTERNALS.md，
+     任何人可复现校验），aria2c / libgit2 用的是上游发布的预构建产物。
+
+内置二进制与依赖的许可证归属（简表，完整清单以 App 内「设置 → 开源许可」为准）：
+  - GNU wget（libwget.so）              GPL-3.0-or-later，静态含 OpenSSL(Apache-2.0) + zlib + musl(MIT)
+  - curl（libcurl.so）                   curl 许可证（MIT 式）
+  - aria2c（libaria2c.so）               GPL-2.0-or-later（含 OpenSSL 链接例外）
+  - libgit2 / libgit2jni（.so）          GPL-2.0-only WITH libgit2 Linking Exception
+  - OkHttp / AndroidX / Compose / OkDownload   Apache-2.0
+  - Jsoup / slf4j / musl                 MIT
+  - JGit / jsch / htmlparser             EDL-1.0 / Revised BSD / MIT+BSD
+  - BouncyCastle bcprov+bcutil           Bouncy Castle Licence（MIT 式）
+  - 根证书包（assets/aria2/cacert.pem）   取自各 CA 公开根，按 Mozilla 根证书计划收录
+
+签名密钥不在本仓库内（app/keystore/ 已被 .gitignore 排除），也不得提交。

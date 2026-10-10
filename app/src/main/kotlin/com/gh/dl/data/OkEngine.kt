@@ -66,22 +66,25 @@ object OkEngine {
         onProgress: (Long, Long, Long) -> Unit,
         cancelHolder: AtomicReference<(() -> Unit)?>,
         resume: Boolean = false,
-        totalHint: Long = -1L
+        totalHint: Long = -1L,
+        jobKey: Long = 0L
     ): Fetch.Saved {
         ensure(ctx)
         val tmpDir = File(ctx.cacheDir, "oktmp")
         if (!tmpDir.exists()) tmpDir.mkdirs()
-        val tmp = File(tmpDir, name)
+        val tmp = File(tmpDir, Fetch.tmpName(jobKey, name))
         // 续传：保留临时文件；否则清掉旧残留，避免误续传
         if (tmp.exists() && !resume) tmp.delete()
 
-        val task = DownloadTask.Builder(url, tmpDir.absolutePath, name)
+        val task = DownloadTask.Builder(url, tmpDir.absolutePath, tmp.name)
             .setConnectionCount(CONN)
             .build()
 
         // 真实总大小：优先 totalHint；hint 缺失时，等所有分片 fetchStart 都上报后求和兜底
         val totalLen = AtomicLongHolder(if (totalHint > 0) totalHint else -1L)
-        val blockMap = mutableMapOf<Int, Long>()
+        // CONN 个分片的回调来自不同线程：普通 mutableMapOf 并发写会抛
+        // ConcurrentModificationException，下载中途直接崩。
+        val blockMap = java.util.concurrent.ConcurrentHashMap<Int, Long>()
         fun recompute() {
             if (totalLen.get() > 0) return // hint 已给出就别用分片求和覆盖
             if (blockMap.size >= CONN) {
@@ -91,16 +94,23 @@ object OkEngine {
         }
         // 真实已下载字节：累加 fetchProgress 的每次增量
         val downloaded = AtomicLongHolder(0L)
-        var lastT = System.currentTimeMillis()
-        var lastB = 0L
+        // Kotlin 的 @Volatile 只能标注字段，局部变量用 AtomicLong 代替
+        val lastT = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val lastB = java.util.concurrent.atomic.AtomicLong(0L)
+        // 多个分片线程同时回调，节流判断与上报必须串行化：
+        // 否则 addAndGet 的读改写窗口会丢字节（进度偏小），lastT/lastB 也会被交叉写坏。
+        val reportLock = Any()
         fun report(force: Boolean = false) {
-            val now = System.currentTimeMillis()
-            val b = downloaded.get()
-            if (force || now - lastT >= 300) {
-                val sp = if (now > lastT) (b - lastB) * 1000 / (now - lastT) else 0L
-                lastT = now
-                lastB = b
-                onProgress(b, totalLen.get(), sp.coerceAtLeast(0L))
+            synchronized(reportLock) {
+                val now = System.currentTimeMillis()
+                val b = downloaded.get()
+                val t = lastT.get()
+                if (force || now - t >= 300) {
+                    val sp = if (now > t) (b - lastB.get()) * 1000 / (now - t) else 0L
+                    lastT.set(now)
+                    lastB.set(b)
+                    onProgress(b, totalLen.get(), sp.coerceAtLeast(0L))
+                }
             }
         }
 
@@ -208,16 +218,28 @@ object OkEngine {
         return saved
     }
 
-    /** 小工具：让 Long 能在匿名内部类里读写 */
-    private class AtomicLongHolder(@Volatile var value: Long) {
-        fun get() = value
+    /**
+     * 小工具：让 Long 能在匿名内部类里读写。
+     * value 只作为 get/set 的存储；累加走底层 AtomicLong，
+     * 因为 `value += delta` 是读-改-写三步，并发下会丢增量。
+     */
+    private class AtomicLongHolder(initial: Long) {
+        private val ref = java.util.concurrent.atomic.AtomicLong(initial)
+
+        @Volatile var value: Long = initial
+            private set
+
+        fun get(): Long = ref.get()
+
         fun set(v: Long) {
+            ref.set(v)
             value = v
         }
 
         fun addAndGet(delta: Long): Long {
-            value += delta
-            return value
+            val n = ref.addAndGet(delta)
+            value = n
+            return n
         }
     }
 }

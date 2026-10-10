@@ -515,7 +515,7 @@ fun SshFallbackCard() {
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = {
                     AppState.settingsDeepLink = "ssh"
-                    AppState.tab = 3
+                    AppState.tab = AppState.TAB_SETTINGS
                 }) { Text("去设置里配置") }
             } else {
                 Button(

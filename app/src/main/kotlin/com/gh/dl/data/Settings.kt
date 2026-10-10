@@ -6,6 +6,23 @@ import org.json.JSONArray
 object Settings {
     private const val FILE = "gh_dl"
 
+    /**
+     * 外观模式的 SharedPreferences key 与默认值。
+     *
+     * 为什么要收成常量而不是各处写字符串：这个 key 原先在 3 个地方各写一遍
+     * （启动预读、initSettings 灌入、外观页写入），默认值也各写各的。
+     * 一旦某处拼错或默认值不一致，表现就是「改了外观重启又变回去」这种很难查的问题。
+     *
+     * 默认值第八轮从 "system" 改成 **"light"**：用户明确要求「这个 App 我默认是浅色的」。
+     * 更关键的是它顺带修掉启动闪黑 —— 原来默认跟随系统，系统深色时 App 第一帧按深色算，
+     * 而浅色才是用户想要的，来回一换就是一次闪。现在没存过设置的用户从头到尾都是浅色。
+     */
+    const val KEY_THEME_MODE = "theme_mode"
+    const val THEME_DEFAULT = "light"
+
+    /** 读当前外观选择（system / light / dark），未设置时为 [THEME_DEFAULT] */
+    fun themeMode(ctx: Context): String = get(ctx, KEY_THEME_MODE, THEME_DEFAULT)
+
     fun get(ctx: Context, key: String, def: String = ""): String =
         ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(key, def) ?: def
 
@@ -14,8 +31,20 @@ object Settings {
     }
 
     /** 读取已保存的加速代理前缀列表（JSON 数组字符串，缺省为空） */
-    fun loadAccelPrefixes(ctx: Context): List<String> {
-        val raw = get(ctx, "accelPrefixes")
+    fun loadAccelPrefixes(ctx: Context): List<String> = parseList(get(ctx, "accelPrefixes"))
+
+    /** 保存加速代理前缀列表（本地持久化） */
+    fun saveAccelPrefixes(ctx: Context, list: List<String>) {
+        put(ctx, "accelPrefixes", jsonList(list))
+    }
+
+    private fun jsonList(list: List<String>): String {
+        val a = JSONArray()
+        list.forEach { a.put(it) }
+        return a.toString()
+    }
+
+    private fun parseList(raw: String): List<String> {
         if (raw.isBlank()) return emptyList()
         return try {
             val a = JSONArray(raw)
@@ -25,11 +54,11 @@ object Settings {
         }
     }
 
-    /** 保存加速代理前缀列表（本地持久化） */
-    fun saveAccelPrefixes(ctx: Context, list: List<String>) {
-        val a = JSONArray()
-        list.forEach { a.put(it) }
-        put(ctx, "accelPrefixes", a.toString())
+    /** 浏览加速的网页镜像站列表（空表示用内置默认） */
+    fun loadBrowseMirrors(ctx: Context): List<String> = parseList(get(ctx, "browseMirrors"))
+
+    fun saveBrowseMirrors(ctx: Context, list: List<String>) {
+        put(ctx, "browseMirrors", jsonList(list))
     }
 }
 

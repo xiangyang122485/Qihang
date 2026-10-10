@@ -191,14 +191,23 @@ object Mirror {
         return null
     }
 
-    /** 取 sha256.sum 里某个文件的校验值，取不到返回 null */
+    /**
+     * 取 sha256.sum 里某个文件的校验值，只返回 64 位摘要本身，取不到返回 null。
+     *
+     * 之前这里返回的是「整行」（形如 hash + 两个空格 + 文件名）。它一路传到下载完成后的
+     * 比对（DownloadsViewModel 与 saved.sha 做 equals），而 saved.sha 是纯 hex，
+     * 于是每个经镜像下载的文件都会误报「与官方校验值不符！文件可能被篡改」。
+     */
     fun sha256(hit: Hit, fileName: String): String? {
         return try {
             val txt = Net.text(hit.base + hit.slug + "/" + hit.version + "sha256.sum")
-            txt.lineSequence().firstOrNull { line ->
-                val f = line.trim().split(Regex("\\s+")).lastOrNull().orEmpty().removePrefix("*")
+            val line = txt.lineSequence().firstOrNull { l ->
+                val f = l.trim().split(Regex("\\s+")).lastOrNull().orEmpty().removePrefix("*")
                 f == fileName
-            }?.trim()
+            } ?: return null
+            val hash = line.trim().split(Regex("\\s+")).firstOrNull()
+                .orEmpty().removePrefix("*").lowercase()
+            if (hash.matches(Regex("[0-9a-f]{64}"))) hash else null
         } catch (e: Exception) { null }
     }
 

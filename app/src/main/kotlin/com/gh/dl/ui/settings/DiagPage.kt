@@ -59,8 +59,12 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun DiagPage(onBack: () -> Unit) {
     val vmParser = LocalParserVM.current
+    val vmSettings = LocalSettingsVM.current
 
     val ctx = LocalContext.current
+    // 「正在探活」「探活报错」都是这一页自己的界面状态，不放 AppState（别的页不关心）
+    var probing by remember { mutableStateOf(false) }
+    var err by remember { mutableStateOf("") }
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -81,25 +85,65 @@ fun DiagPage(onBack: () -> Unit) {
             }
         }
 
-        // ---- 国内镜像源探活（启动自动跑，这里可手动刷新） ----
+        // ---- 国内镜像源探活 ----
+        // 第九轮：启动时**不再自动探活**（默认关闭，见 vmSettings.mirrorProbeOn）。
+        // 原来一进 App 就并发对 9 个第三方站点发 HEAD，属于「没经同意就外联」，
+        // 所以这里改成：默认显示「还没联网探活过」+ 一个用户主动点的「立即探活」。
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("国内镜像源实时延迟", fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    if (!AppState.mirrorProbed) {
+                    if (probing) {
                         CircularProgressIndicator(Modifier.size(16.dp))
                     } else {
                         TextButton(onClick = {
+                            probing = true
+                            err = ""
                             Thread {
-                                val r = MirrorSources.probeAll()
-                                AppState.mirrorProbe = r
+                                // 探活本身可能整段抛出（线程池、DNS 客户端都可能）。
+                                // 结果与错误都只在后台算好，**统一一次 MAIN.post 回主线程写**：
+                                // 既守住「界面状态只从主线程写」的约定，也保证抛出时
+                                // 这个转圈一定停得下来（否则按钮永远点不动，第八轮同类问题）。
+                                var r: List<MirrorSources.Probe> = emptyList()
+                                var failure: String? = null
+                                try {
+                                    r = MirrorSources.probeAll()
+                                } catch (e: Exception) {
+                                    failure = "探活失败：${e.message ?: e.javaClass.simpleName}"
+                                }
+                                val got = r
+                                val why = failure
+                                MAIN.post {
+                                    AppState.mirrorProbe = got
+                                    if (got.isNotEmpty()) AppState.mirrorProbed = true
+                                    err = why ?: ""
+                                    probing = false
+                                }
                             }.start()
-                        }) { Text("刷新", fontSize = 12.sp) }
+                        }) { Text(if (AppState.mirrorProbe.isNotEmpty()) "重新探活" else "立即探活", fontSize = 12.sp) }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
-                if (!AppState.mirrorProbed && AppState.mirrorProbe.isEmpty()) {
-                    Text("正在探活 9 个国内镜像源…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("启动时自动探活", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            "开着时每次进 App 会自动连这 9 个站点测延迟；关着就一次也不联网，只能手动点。",
+                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = vmSettings.mirrorProbeOn, onCheckedChange = {
+                        vmSettings.mirrorProbeOn = it
+                        Settings.put(ctx, "mirrorProbeOn", if (it) "1" else "0")
+                    })
+                }
+                Spacer(Modifier.height(6.dp))
+                if (AppState.mirrorProbe.isEmpty()) {
+                    Text(
+                        if (probing) "正在探活 9 个国内镜像源…"
+                        else "还没探活过（默认不自动联网测）。想看看哪些镜像站通、延迟多少，点上面的「立即探活」。",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else {
                     AppState.mirrorProbe.forEach { p ->
                         Row(
@@ -126,9 +170,14 @@ fun DiagPage(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "不可用的源已置灰；解析器选「国内镜像」时只列出探活成功的源。",
+                        "这里的「可用」只表示那个站点当时连得上，不代表它同步了你要的仓库。\n" +
+                            "解析器选「国内镜像」时列的是「设置 → 镜像源管理」里的全部源（探到延迟的会顺带标出来），不会把没探到的藏掉。",
                         fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (err.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(err, fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }

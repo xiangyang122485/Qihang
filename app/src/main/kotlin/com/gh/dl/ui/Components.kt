@@ -2,7 +2,6 @@ package com.gh.dl.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -25,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gh.dl.ui.theme.isDarkTheme
 
 /**
  * 统一卡片：12dp 圆角、surface 表面色、outlineVariant 浅描边、轻微阴影。
@@ -107,7 +107,7 @@ fun RowScope.IconText(
  */
 val ColorScheme.warning: Color
     @Composable
-    get() = if (isSystemInDarkTheme()) Color(0xFFD29922) else Color(0xFF9A6700)
+    get() = if (isDarkTheme()) Color(0xFFD29922) else Color(0xFF9A6700)
 
 /**
  * 文字链接色：primary 的 0.7 透明度版本。所有「文字链接」（复制 / 打开 / 导航类 TextButton）
@@ -116,3 +116,20 @@ val ColorScheme.warning: Color
 val ColorScheme.link: Color
     @Composable
     get() = primary.copy(alpha = 0.7f)
+
+/**
+ * 强调红（实心按钮用）：解析器页「解析」按钮专用，与绿色主按钮区分开。
+ * 浅色 #C62828 / 深色 #EF5350 —— 深色底上纯红不够亮，提亮一档保证白字可读。
+ */
+val ColorScheme.accentRed: Color
+    @Composable
+    get() = if (isDarkTheme()) Color(0xFFEF5350) else Color(0xFFC62828)
+
+/**
+ * 强调蓝（实心按钮用）：「浏览」按钮专用，语义是「打开网页」，
+ * 与绿色（下载类动作）、红色（解析动作）区分。
+ * 浅色 #1565C0 / 深色 #64B5F6。
+ */
+val ColorScheme.accentBlue: Color
+    @Composable
+    get() = if (isDarkTheme()) Color(0xFF64B5F6) else Color(0xFF1565C0)

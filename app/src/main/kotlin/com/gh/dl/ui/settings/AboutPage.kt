@@ -6,6 +6,7 @@ import com.gh.dl.data.*
 
 import android.content.ClipboardManager
 import android.content.Context
+import com.gh.dl.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -114,6 +115,13 @@ fun AboutPage(onBack: () -> Unit) {
         }
 
         Spacer(Modifier.height(6.dp))
-        Text("版本 1.0 · 包名 " + ctx.packageName, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // 版本号读 BuildConfig（唯一真值源在 app/build.gradle.kts），
+        // 不再写死字面量 —— 原来这里写死 "版本 1.0"，改版本号时界面不会跟着变。
+        Text(
+            "版本 " + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）" +
+                (if (BuildConfig.DEBUG) " · 验证包" else "") +
+                " · 包名 " + ctx.packageName,
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

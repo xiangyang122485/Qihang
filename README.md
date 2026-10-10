@@ -94,13 +94,17 @@ gh release download --repo owner/repo
 ## 五、这个 APK 现在有什么
 
 - 粘贴链接，或从浏览器/GitHub 里**分享链接直接进来**
-- **优选线路**：用公共 DoH 拿到 github.com 真实 IP → 逐个测速 → 选最快的那条直连（不经过任何第三方服务器）
+- **优选线路（第九轮起默认关闭）**：开启后用公共 DoH 拿 github.com 真实 IP → 逐个测速 → 选最快的那条直连。
+  开关在「设置 → 网络」，默认关；关着就只用系统 DNS 直连，不会向第三方 DNS 查询。
+- **镜像浏览加速（默认关闭）**：开启后抓取 GitHub 页面时会优先试第三方镜像源。这类会改变出站目的地的能力，一律做成独立开关且默认关。
 - Release 列表，按 Android / Windows / macOS / Linux 筛选（手机上默认只看 APK）
 - 下载走系统下载器：支持断点续传、通知栏进度、大文件
 - 源码 ZIP / TAR.GZ（走 codeload 官方 CDN），并生成 `git clone` 命令
 - 设置里可填：**自建节点前缀**、**GitHub Token**、**HTTP 代理 host:port**
 
-合规说明：默认只连 GitHub 官方域名；第三方镜像一律不内置，真要用就在"自建节点"里自己填，责任自负。
+合规说明：**敏感功能全部默认关闭**（第九轮定的口径）—— 默认只连 GitHub 官方域名、不查询第三方 DoH、
+不自动探活镜像源、不记录本地浏览历史；上面每一项都要用户在设置里主动打开。
+第三方镜像一律不内置，真要用就在"自建节点"里自己填，责任自负。
 
 ---
 
@@ -128,9 +132,19 @@ export GRADLE_USER_HOME="E:/HermesAndroid/gradle-home"
 > 脚本推送后会自动清除远程地址里的令牌，不会在本地留下凭据。
 
 ### 签名与合规
-- 所有提交已用 GPG 密钥签名，推送到 GitHub 后显示 **Verified** 标记。
+- Release 包用**你自己的**生产 keystore 签：`app/build.gradle.kts` 里的 `signingConfigs.release`
+  从 `app/keystore/keystore.properties` 读 `storeFile / storePassword / keyAlias / keyPassword`；
+  这个文件不存在时构建会**直接报错**（不再回退 debug 签名）。交付前仍建议
+  `apksigner verify --print-certs app-release.apk` 看一遍证书 DN，确认是
+  `CN=GH Downloader, O=gh-dl` 而不是 `CN=Android Debug`。
 - 本仓库**不包含**任何签名私钥 / 令牌；`app/keystore/` 已由 `.gitignore` 排除，切勿提交。
-- 内置 `libaria2c.so`（aria2, GPL）与 `libgit2.so`（GPLv2+链接例外），依 GPL 要求，分发二进制须提供源码——将源码发布到 GitHub 正是满足许可证的做法。
+- 许可证：工程源码用 **MIT**（根目录 `LICENSE`）；第三方组件归属与 GPL 义务的履行方式写在根目录
+  `NOTICE`；许可证全文随 APK 打包在 `app/src/main/assets/licenses/`，App 内「设置 → 开源许可」逐条可查。
+- 内置 `libwget.so`（GNU wget, GPL-3+）、`libaria2c.so`（aria2, GPL-2+ 含 OpenSSL 链接例外）、
+  `libgit2.so`（GPLv2+链接例外）都是 copyleft 产物。依 GPL 要求，分发二进制须能提供对应源码：
+  ① 本仓库就是源码要约；② wget 由我们自己交叉编译，完整 configure 参数与全部输入/产物 SHA256
+  记录在 `docs/BUILD-INTERNALS.md`，任何人可复现并校验；内置二进制与 CA 包的
+  SHA-256 清单见根目录 `native-binaries.sha256`（取自 release APK 内实际分发的文件）。
 
 ### 配套发布包内容
 若你拿到的是本项目的 ZIP 发布包，里面包含：

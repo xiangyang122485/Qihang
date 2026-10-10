@@ -76,6 +76,9 @@ object Git {
     /**
      * 把当前激活钥匙解密后写到 App 私有临时文件（libgit2 需要文件路径）。
      * 文件在 filesDir/ssh 下，权限仅属主可读，外部 App 不可读。
+     *
+     * 注意：这是明文私钥，用完必须立刻 [wipeActiveKeyFile]。写它只是因为 libgit2
+     * 的回调只接受路径，JGit 那条路（[activeKeyBytes]）是直接喂字节的。
      */
     fun activeKeyFile(ctx: Context): File? {
         val e = SshKeys.active(ctx) ?: return null
@@ -87,6 +90,19 @@ object Git {
             return null
         }
         return f
+    }
+
+    /**
+     * 删除 libgit2 用过的明文私钥临时文件（先覆零再删，避免删掉后仍能从磁盘残留恢复）。
+     */
+    fun wipeActiveKeyFile(ctx: Context) {
+        val f = File(dir(ctx), "active_id_rsa")
+        if (!f.exists()) return
+        try {
+            val raf = java.io.RandomAccessFile(f, "rw")
+            raf.use { it.seek(0); it.write(ByteArray(it.length().toInt())); it.setLength(0) }
+        } catch (_: Exception) { /* 覆零失败也要继续删 */ }
+        f.delete()
     }
 
     /** 算 GitHub 页面上那种 SHA256:xxxx 指纹，方便加完核对 */
@@ -181,6 +197,12 @@ object Git {
             // 直接把解密后的私钥字节喂给 JSch，不在磁盘留明文文件
             jsch.addIdentity("gh-dl", prv, pub, null)
             val s = jsch.getSession("git", ip, 22)
+            // 这里关掉主机密钥校验是有意的：连接目标是 IPS 里写死的 GitHub 官方 IP，
+            // 不是任意主机，也不存在可预置的 known_hosts（首次连接必然无记录，严格校验
+            // 只会让所有用户都克隆失败）。风险由上游 [Net.doh] 的 DoH 解析兜住——
+            // 若 DoH 被污染给出假 IP，这里会连到非 GitHub 的机器；那种情况下
+            // 服务器只会拒绝我们的公钥，拿不到仓库内容，也不会泄露私钥。
+            // 要真正消除这一格风险，需内置 GitHub 官方指纹并用 setKnownHosts 校验。
             s.setConfig("StrictHostKeyChecking", "no")
             s.setConfig("PreferredAuthentications", "publickey")
             s.setHostKeyAlias("github.com")
@@ -359,7 +381,9 @@ object Git {
             if (stalled.get()) {
                 "传输停滞（网络中断）：${secs}s 内没有再收到数据，已主动断开。\n" +
                     "这是网络到 GitHub 22 端口的连接被中途掐了。\n" +
-                    "建议：① 勾选「只取最新一次提交」再试，数据量小很多；② 换 Wi-Fi / 换个时段再试。"
+                    // 本 App 没有「浅克隆 / 只取最新一次提交」这个开关（JGit 走完整历史），
+                    // 原来那句「勾选…」指向一个不存在的选项，用户会照着找半天。给可执行的建议。
+                    "建议：① 只是想拿代码的话，改用解析器页的「源码包（zip）」下载，比克隆小得多；② 换 Wi-Fi / 换个时段再试；③ 仓库很大时先关掉 LFS。"
             } else {
                 "克隆失败（用了 ${secs}s）：${e.message ?: e.javaClass.simpleName}"
             }
@@ -384,9 +408,15 @@ object Git {
         out.parentFile?.mkdirs()
 
         val ssh = AppState.sshChannel == "ssh" && hasKey(ctx) && AppState.cloneOn
-        val keyPath = if (ssh) activeKeyFile(ctx)?.absolutePath ?: "" else ""
+        val keyFile = if (ssh) activeKeyFile(ctx) else null
+        val keyPath = keyFile?.absolutePath ?: ""
         onProgress(Progress(if (ssh) "libgit2：正在克隆（SSH 22 端口）…" else "libgit2：正在克隆（HTTPS）…", 0, 0, -1f, 0))
-        val r = Git2.clone(slug, out, keyPath, ssh)
+        val r = try {
+            Git2.clone(slug, out, keyPath, ssh)
+        } finally {
+            // 克隆一结束（成功、失败、抛异常都算）立刻抹掉明文私钥，不让它常驻磁盘
+            if (keyFile != null) wipeActiveKeyFile(ctx)
+        }
         if (!r.startsWith("OK:")) {
             if (out.exists()) out.deleteRecursively()
             val tip = when {

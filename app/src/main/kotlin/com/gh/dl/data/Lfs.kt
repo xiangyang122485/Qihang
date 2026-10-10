@@ -134,9 +134,11 @@ object Lfs {
             if (oid.isNotBlank() && href.isNotBlank()) links[oid] = href
         }
 
-        var okCount = 0
-        var failCount = 0
-        var okBytes = 0L
+        // 这些计数由最多 3 个工作线程并发累加：IntVar 的 ++ 是「读-改-写」，
+        // 会丢数（成功/失败数对不上、字节数偏小），必须用原子类。
+        val okCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val failCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val okBytes = java.util.concurrent.atomic.AtomicLong(0L)
         val sem = Semaphore(3) // 并发上限，防镜像 429
         val jobs = pointers.map { (file, p) ->
             Thread {
@@ -144,21 +146,27 @@ object Lfs {
                 try {
                     val href = links[p.oid]
                     if (href.isNullOrBlank()) {
-                        failCount++; return@Thread
+                        failCount.incrementAndGet(); return@Thread
                     }
                     val dl = Channels.file(AppState.channel, AppState.custom, href)
                     val r2 = Request.Builder().url(dl).header("User-Agent", "gh-dl-android").build()
                     client.newCall(r2).execute().use { call ->
-                        if (!call.isSuccessful) { failCount++; return@Thread }
+                        if (!call.isSuccessful) { failCount.incrementAndGet(); return@Thread }
                         val data = call.body?.bytes() ?: ByteArray(0)
-                        if (data.size.toLong() != p.size) { failCount++; return@Thread } // 大小不符，保险起见不覆盖
-                        FileOutputStream(file).use { it.write(data) }
-                        okCount++
-                        okBytes += data.size.toLong()
-                        onProgress("LFS：已拉取 $okCount/${pointers.size} · ${fmtSize(okBytes)}", okCount, okBytes)
+                        if (data.size.toLong() != p.size) { failCount.incrementAndGet(); return@Thread } // 大小不符，保险起见不覆盖
+                        // 先写 .part 再改名：中途断电/异常不会留下半截文件冒充真身
+                        val part = File(file.absolutePath + ".part")
+                        FileOutputStream(part).use { it.write(data) }
+                        if (!part.renameTo(file)) {
+                            part.delete()
+                            failCount.incrementAndGet(); return@Thread
+                        }
+                        val ok = okCount.incrementAndGet()
+                        val bytes = okBytes.addAndGet(data.size.toLong())
+                        onProgress("LFS：已拉取 $ok/${pointers.size} · ${fmtSize(bytes)}", ok, bytes)
                     }
                 } catch (e: Exception) {
-                    failCount++
+                    failCount.incrementAndGet()
                 } finally {
                     sem.release()
                 }
@@ -167,10 +175,11 @@ object Lfs {
         jobs.forEach { it.start() }
         jobs.forEach { try { it.join() } catch (e: InterruptedException) { /* ignore */ } }
 
-        val msg = if (failCount == 0)
-            "Git LFS：已拉取全部 $okCount 个大文件（${fmtSize(okBytes)}），指针已替换为真实文件"
+        val nOk = okCount.get(); val nFail = failCount.get(); val nBytes = okBytes.get()
+        val msg = if (nFail == 0)
+            "Git LFS：已拉取全部 $nOk 个大文件（${fmtSize(nBytes)}），指针已替换为真实文件"
         else
-            "Git LFS：成功 $okCount / 失败 $failCount（失败项仍是 LFS 指针，可在电脑上用 git lfs pull 补拉）"
-        return Result(pointers.size, okBytes, failCount, msg)
+            "Git LFS：成功 $nOk / 失败 $nFail（失败项仍是 LFS 指针，可在电脑上用 git lfs pull 补拉）"
+        return Result(pointers.size, nBytes, nFail, msg)
     }
 }

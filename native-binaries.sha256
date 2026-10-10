@@ -1,0 +1,17 @@
+# 内置原生二进制 SHA-256 清单（版本 1.2.1 / r9）
+# 用途：公开分发时供用户独立核验 APK 内二进制未被篡改（供应链透明）。
+# 哈希取自 Qihang-1.2.1-r9-release.apk 内实际分发的文件（lib/arm64-v8a/ 与 assets/aria2/）。
+# 生成时间：2026-10-10
+
+9397aac0de54c8c15b8166486eb80bfe27937bd6d6b6af4bb8383b155213bec1  libaria2c.so
+1b050abd1669f9a2ac29b34eb022cdeafb271dce5a4fb57d8ef8fadff6d7be1f  libcurl.so
+ee4881ec10e6995863e87613e55afb3a5835e17ff56b4e32c8dbffb466a8cfef  libgit2jni.so
+c0aa357596b0c06a9e3e234e5fa7a76fa5db22c7882c83de2909a66fe30aebb8  libgit2.so
+c372a7e93090751b31ea05508df2d447c0e7ab9d4f3e805ee65b737a39340631  libwget.so
+92407ee12d399b4e67cadc412d72ffe4069f612827ff354d51848b3b00146b52  assets/aria2/cacert.pem
+
+# 说明：
+# - libwget.so 为第九轮重编版本（静态链 OpenSSL 3.5.9 / zlib 1.3.2），
+#   源码、configure 参数与校验和见 docs/BUILD-INTERNALS.md；
+# - libcurl.so 哈希与 moparisthebest/static-curl v8.11.0 官方 sha256sum.txt 一致；
+# - libaria2c.so / libgit2*.so 为上游预构建产物，见 NOTICE 与 App 内「设置 → 开源许可」。

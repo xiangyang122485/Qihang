@@ -5,7 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.navigation.NavHostController
 
 /**
- * 四个按页划分的 ViewModel 通过 CompositionLocal 暴露给整棵 Compose 树，
+ * 各页的 ViewModel 通过 CompositionLocal 暴露给整棵 Compose 树，
  * 这样各 Tab / 设置子页 / 弹窗无需层层传参即可取用自己归属的那份状态，
  * 同时也避免为了解耦而把状态重新塞回全局 object。
  *
@@ -16,6 +16,7 @@ val LocalParserVM = compositionLocalOf<ParserViewModel> { error("ParserViewModel
 val LocalDownloadsVM = compositionLocalOf<DownloadsViewModel> { error("DownloadsViewModel 未通过 CompositionLocalProvider 提供") }
 val LocalSearchVM = compositionLocalOf<SearchViewModel> { error("SearchViewModel 未通过 CompositionLocalProvider 提供") }
 val LocalSettingsVM = compositionLocalOf<SettingsViewModel> { error("SettingsViewModel 未通过 CompositionLocalProvider 提供") }
+val LocalBrowseVM = compositionLocalOf<BrowseViewModel> { error("BrowseViewModel 未通过 CompositionLocalProvider 提供") }
 
 /**
  * 设置页的 [NavHostController]。在根 [GhApp] 用 rememberNavController() 创建（owner 与 Activity 同生命周期，
@@ -33,4 +34,5 @@ val vmClasses: Array<Class<out ViewModel>> = arrayOf(
     DownloadsViewModel::class.java,
     SearchViewModel::class.java,
     SettingsViewModel::class.java,
+    BrowseViewModel::class.java,
 )

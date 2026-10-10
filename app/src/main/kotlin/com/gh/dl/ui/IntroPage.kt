@@ -55,11 +55,10 @@ fun IntroPage(onDone: () -> Unit) {
             PackageManager.PERMISSION_GRANTED
     else true
 
-    var askedNoti by remember { mutableStateOf(notiGranted) }
-
+    // 回调里没有需要驱动界面的状态（原本那个 askedNoti 只写不读），所以直接空实现
     val notiLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* 无论授予与否都继续，不阻断 */ askedNoti = true }
+    ) { /* 无论授予与否都继续，不阻断 */ }
 
     Column(
         Modifier.fillMaxSize()
@@ -105,12 +104,7 @@ fun IntroPage(onDone: () -> Unit) {
         Button(
             onClick = {
                 // 仅在点「开始使用」时尝试要通知权限；拒绝也不阻断
-                if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
-                        ctx, Manifest.permission.POST_NOTIFICATIONS
-                    ) != PackageManager.PERMISSION_GRANTED
-                ) {
-                    notiLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+                if (!notiGranted) notiLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 onDone()
             },
             modifier = Modifier.fillMaxWidth()

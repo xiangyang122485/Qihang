@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,12 +39,14 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -57,11 +60,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -145,6 +153,7 @@ private fun LineChip(id: String, label: String, ctx: Context) {
 fun ParserTab() {
     val vmParser = LocalParserVM.current
     val vmDownloads = LocalDownloadsVM.current
+    val vmBrowse = LocalBrowseVM.current
 
     val ctx = LocalContext.current
 
@@ -171,13 +180,37 @@ fun ParserTab() {
                         leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(18.dp)) }
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { if (vmParser.input.isNotBlank()) vmParser.doLoad(ctx, vmParser.input) },
-                        enabled = vmParser.input.isNotBlank() && !vmParser.loading,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("解析") }
+                    // 原本一个整条「解析」按钮，现在拆成左右两半：
+                    //  红「解析」= 走 API 拉 Release / 源码树（本 App 的主功能）
+                    //  蓝「浏览」= 跳到「浏览」Tab，用内嵌页面看这个仓库
+                    Row(Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { if (vmParser.input.isNotBlank()) vmParser.doLoad(ctx, vmParser.input) },
+                            enabled = vmParser.input.isNotBlank() && !vmParser.loading,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.accentRed,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("解析") }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { vmParser.browseUrl()?.let { vmBrowse.open(it) } },
+                            enabled = vmParser.input.isNotBlank() && vmParser.browseUrl() != null,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.accentBlue,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("浏览") }
+                    }
                 }
             }
+        }
+        // 解析历史（第六轮新增）：点一条就填回输入框并重新解析。
+        // 放在输入框正下方而不是页面底部，因为用户找它的时机就是「刚打开输入框的时候」。
+        if (vmParser.history.isNotEmpty()) {
+            item { HistoryCard() }
         }
         if (vmParser.input.isNotBlank()) {
             item {
@@ -294,12 +327,16 @@ fun ParserTab() {
                     }
                 }
             }
-            vmParser.releases.forEach { rel ->
+            // 用 items(..., key=) 而不是 forEach{item{}}：
+            // 「批量下载」勾选、筛选开关、进度刷新都会让这一段重算，没有 key 时
+            // Compose 只能按下标对齐 —— 列表长度一变（筛出/滤掉某个 Release），
+            // 后面的卡片会整片错位重排，表现就是滚动时突然跳一下、勾选态串到别的卡上。
+            items(vmParser.releases, key = { "rel-" + it.tag }) { rel ->
                 val assets = rel.assets.filter {
                     vmParser.filter == "all" || com.gh.dl.data.osOf(it.name) == vmParser.filter
                 }
                 if (assets.isNotEmpty()) {
-                    item { ReleaseCard(rel, assets) { u, n, s -> vmDownloads.startDownload(ctx, u, n, sizeHint = s) } }
+                    ReleaseCard(rel, assets) { u, n, s -> vmDownloads.startDownload(ctx, u, n, sizeHint = s) }
                 }
             }
         }
@@ -309,7 +346,9 @@ fun ParserTab() {
         if (all.isNotEmpty() || mh != null || vmParser.mirrorMsg.isNotBlank()) {
             item { SectionHeader("镜像通道", accent = MaterialTheme.colorScheme.tertiary) }
             if (all.isNotEmpty()) {
-                all.forEach { (ver, hit) -> item { MirrorVersionCard(ver, hit) } }
+                items(all.toList(), key = { "mvr-" + it.first }) { (ver, hit) ->
+                    MirrorVersionCard(ver, hit)
+                }
             } else if (mh != null) {
                 item { MirrorCard(mh) }
             } else if (vmParser.mirrorMsg.isNotBlank()) {
@@ -363,20 +402,22 @@ private fun MirrorCard(mh: Mirror.Hit) {
                         )
                     }
                     TextButton(onClick = {
-                        Thread {
-                            val h = Mirror.sha256(mh, a.name)
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                if (h != null) copyText(ctx, h, "校验值已复制")
-                                else toast(ctx, "这个文件没有提供校验值")
-                            }
-                        }.start()
+                        // 校验值要现下现算（几十 MB 的文件算 SHA256 是秒级），必须在后台；
+                        // 但**必须有兜底**：原来这条裸线程没有异常出口，
+                        // 网络断了 / 镜像站返回怪东西 → 线程静悄悄死掉，用户点了「校验」什么也没发生。
+                        verifying(ctx, "校验值") { Mirror.sha256(mh, a.name) }
                     }) { Text("校验", fontSize = 12.sp) }
                     Spacer(Modifier.width(4.dp))
                     if (!vmParser.parserMultiSelect) {
                         Button(onClick = {
                             Thread {
-                                val h = Mirror.sha256(mh, a.name)
-                                vmDownloads.startDownload(ctx, a.url, a.name, h, sizeHint = a.size)
+                                // 校验值拿不到也照样下：runCatching 是必须的——
+                                // 原来 Mirror.sha256 一抛（断网、镜像站 500）这条线程就死在这儿，
+                                // MAIN.post 永远不执行，用户点「下载」表现为「按了没反应」。
+                                val h = runCatching { Mirror.sha256(mh, a.name) }.getOrNull()
+                                // startDownload 会写 job.running / AppState.tab / 下载列表，
+                                // 这些都是 Compose 状态，必须回主线程改。
+                                MAIN.post { vmDownloads.startDownload(ctx, a.url, a.name, h, sizeHint = a.size) }
                             }.start()
                         }) { Text("下载") }
                     }
@@ -430,20 +471,15 @@ private fun MirrorVersionCard(ver: String, hit: Mirror.Hit) {
                         )
                     }
                     TextButton(onClick = {
-                        Thread {
-                            val h = Mirror.sha256(hit, a.name)
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                if (h != null) copyText(ctx, h, "校验值已复制")
-                                else toast(ctx, "这个文件没有提供校验值")
-                            }
-                        }.start()
+                        verifying(ctx, "校验值") { Mirror.sha256(hit, a.name) }
                     }) { Text("校验", fontSize = 12.sp) }
                     Spacer(Modifier.width(4.dp))
                     if (!vmParser.parserMultiSelect) {
                         Button(onClick = {
                             Thread {
-                                val h = Mirror.sha256(hit, a.name)
-                                vmDownloads.startDownload(ctx, a.url, a.name, h, sizeHint = a.size)
+                                // 同上面镜像通道那个按钮：算不出校验值也要照样下
+                                val h = runCatching { Mirror.sha256(hit, a.name) }.getOrNull()
+                                MAIN.post { vmDownloads.startDownload(ctx, a.url, a.name, h, sizeHint = a.size) }
                             }.start()
                         }) { Text("下载") }
                     }
@@ -517,8 +553,15 @@ private fun RepoCard(r: RepoInfo) {
     GhCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(r.fullName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            if (r.description.isNotBlank()) {
-                Text(r.description, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val desc = cleanDesc(r.description)
+            if (desc.isNotBlank()) {
+                Text(
+                    desc,
+                    fontSize = 13.sp,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             Spacer(Modifier.height(6.dp))
             Text(
@@ -749,4 +792,84 @@ private fun extractGithubLinks(text: String): List<String> {
         out.add(s)
     }
     return out.toList()
+}
+
+/**
+ * 解析历史卡片（第六轮新增）。
+ *
+ * 默认收起只显示一行：手机上「历史」不是每次都要看的东西，摊开会把下面的仓库信息
+ * 顶出屏幕，那正是用户上一轮抱怨「设置页太混乱」的同一类问题。
+ * 展开后最多列 12 条（存储上限 [History.MAX] = 60），每条右侧一个删除，底部一个「清空」。
+ * 点条目 = 填回输入框并立即重新解析（见 [ParserViewModel.openHistory]）。
+ */
+@Composable
+private fun HistoryCard() {
+    val vmParser = LocalParserVM.current
+    val ctx = LocalContext.current
+    var open by remember { mutableStateOf(false) }
+
+    GhCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Row(
+                Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "解析历史（${vmParser.history.size}）",
+                    fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(if (open) "收起 ▴" else "展开 ▾", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (open) {
+                vmParser.history.take(12).forEach { e ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            Modifier.weight(1f)
+                                .clickable { vmParser.openHistory(ctx, e) }
+                        ) {
+                            Text(e.slug, fontSize = 13.sp)
+                            Text(
+                                e.title.ifBlank { e.input },
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { vmParser.removeHistory(ctx, e.slug) }) {
+                            Text("删", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                if (vmParser.history.size > 12) {
+                    Text("还有 ${vmParser.history.size - 12} 条未列出", fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // 说清楚这里存的到底是什么：用户容易以为历史是「页面快照」，
+                // 点一下能离线复现。实际只存链接，点开必然重新联网拿最新内容。
+                Text(
+                    "只记链接，不存页面快照：点一条会重新联网解析（看到的是最新内容，离线时点不开）。" +
+                        "同一仓库只留最新一条，开关在「设置 → 浏览」。",
+                    fontSize = 10.sp, color = MaterialTheme.colorScheme.outline
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { vmParser.clearHistory(ctx) }) {
+                        Text("清空历史", fontSize = 12.sp, color = MaterialTheme.colorScheme.link)
+                    }
+                }
+            }
+        }
+    }
 }

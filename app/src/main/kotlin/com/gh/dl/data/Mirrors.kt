@@ -44,9 +44,42 @@ object MirrorManager {
     private fun builtins(): List<MirrorSource> =
         MirrorSources.ALL.map { MirrorSource(it.id, it.name, it.base) }
 
+    /**
+     * [list] 的内存镜像：`磁盘原文 -> 解析结果`。
+     *
+     * 为什么要有这一层：界面在**组合过程中**就会调 [list]（解析器页的镜像选择条、
+     * 搜索页那一排、镜像管理页），而组合是「每次相关状态变化都重来一遍」——
+     * 原来每次都要读一次 SharedPreferences 再解析一遍 JSON，等于在 UI 线程做磁盘 IO。
+     * 这一轮用户提的「上下滑动卡卡的」里有它一份：滑解析器页时列表项反复重组，
+     * 每次都附带一次磁盘读。
+     *
+     * 以磁盘原文当键，所以任何写入（导入/删除/测速改延迟）之后缓存自然失效，
+     * 不会出现「改了不生效」。写入方不需要维护它，只有一个 volatile 字段。
+     */
+    /**
+     * 解析结果缓存：raw 和解析出来的列表**必须绑成一个不可变对象**存。
+     *
+     * 原来用两个 @Volatile 字段（cacheRaw / cacheVal）分别存，写的时候是
+     * `cacheRaw = raw; cacheVal = out` 两步 —— 另一个线程可能正好夹在两步之间读，
+     * 看到「raw 已经是新的、列表还是上一份的」，于是拿到**已经被删掉的镜像源**。
+     * 界面侧（解析页的镜像下拉、加速页列表）确实是在后台线程里调 list() 的，
+     * 而用户在镜像管理页删源时又是主线程调 saveList()，两边并发是现实存在的。
+     * 一个 val 对像一起换，读到的永远是一整份配好的数据，没有中间态。
+     */
+    private class Cached(val raw: String, val list: List<MirrorSource>)
+
+    @Volatile private var cache: Cached? = null
+
     /** 读取持久化的镜像列表；首次为空时返回内置 9 家 */
     fun list(ctx: Context): List<MirrorSource> {
         val raw = Settings.get(ctx, SP_KEY)
+        cache?.let { if (it.raw == raw) return it.list }
+        val out = parse(raw)
+        cache = Cached(raw, out)
+        return out
+    }
+
+    private fun parse(raw: String): List<MirrorSource> {
         if (raw.isBlank()) return builtins()
         return try {
             val a = JSONArray(raw)
@@ -87,7 +120,11 @@ object MirrorManager {
                 }
             )
         }
-        Settings.put(ctx, SP_KEY, a.toString())
+        val raw = a.toString()
+        Settings.put(ctx, SP_KEY, raw)
+        // 缓存随写入一起换掉：直接装新值，下次 [list] 命中，不必再解析一遍。
+        // 必须整体换（不是分别改两个字段），理由见 [Cached] 的注释。
+        cache = Cached(raw, list.toList())
     }
 
     /** 恢复内置 9 家，并把 tuna 设为默认 */

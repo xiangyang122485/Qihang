@@ -38,6 +38,21 @@
 -keep class org.slf4j.** { *; }
 -dontwarn org.slf4j.**
 
+# ---- WHATWG html5 解析器（nu.validator.htmlparser，「设置 → 浏览 → 先修复再解析」档）----
+# 必须 keep：代码里是 Class.forName 反射调用它，R8 看不到静态引用边，
+# 不 keep 的话 release 包一选这一档就 ClassNotFoundException（debug 包不混淆所以看不出来）。
+-keep class nu.validator.htmlparser.** { *; }
+-keep class nu.validator.saxtree.** { *; }
+# 它引用的 icu4j / jchardet 在 pom 里都是 optional，我们不打进来：
+# 只有「编码嗅探 / 规范化检查」那两条路径会用到，我们的输入永远是已解码的 String，
+# 走不到那里，所以只压掉告警，不补依赖（补了要多 10MB+）。
+# 同理，XOM / iso-relax 输出后端也是 optional，我们只用 SAX→字符串这一条路。
+-dontwarn com.ibm.icu.**
+-dontwarn org.mozilla.intl.chardet.**
+-dontwarn nu.xom.**
+-dontwarn org.iso_relax.**
+-dontwarn com.thaiopensource.**
+
 # ---- 保留泛型/签名/内部类/源码行号等属性（部分库用反射读类型）----
 -keepattributes Signature,InnerClasses,EnclosingMethod,SourceFile,LineNumberTable,*Annotation*
 

@@ -22,6 +22,8 @@ import com.gh.dl.ui.AppState
  *
  * 合规红线：前缀只拼在「原 URL」前面；前缀化后目标 host 变成第三方中转域名，
  * 拦截器会同时剥离 Authorization 头，绝不让 GitHub Token 被带进中转请求。
+ *
+ * 「浏览」Tab 明确**不走**这里的前缀（真机验证过，见 [isWebGithubHost] 的说明）。
  */
 object Accel {
 
@@ -37,6 +39,15 @@ object Accel {
         "mirrors.huaweicloud.com", "mirror.bjtu.edu.cn", "mirror.sjtu.edu.cn",
         "mirrors.hust.edu.cn", "mirrors.bfsu.edu.cn", "mirror.lzu.edu.cn",
         "gitee.com", "gitlab.com", "codeberg.org", "gitcode.com"
+    )
+
+    /**
+     * 「浏览」网页涉及的 GitHub 域名，比下载用的 [GITHUB_HOSTS] 宽：
+     * 仓库页的 JS/CSS 在 *.githubassets.com，图片与头像在 *.githubusercontent.com。
+     * 只按「等值或父域后缀」匹配，不做子串判断。
+     */
+    private val WEB_DOMAINS = listOf(
+        "github.com", "githubusercontent.com", "githubassets.com"
     )
 
     /** 当前生效的加速前缀（去掉结尾斜杠） */
@@ -56,6 +67,19 @@ object Accel {
         if (u.host in NEVER_PREFIX) return false
         return isGithubHost(u.host)
     }
+
+    /**
+     * host 是否是「浏览网页」意义上的 GitHub 域名（含各资产子域）。
+     *
+     * 为什么网页绝不能套加速前缀（真机截图证实）：闪电用的前缀是 gh-proxy 风格的
+     * **文件**中转，只认 /raw、/releases/download、/archive 这类可下载的地址；
+     * 把仓库主页 URL 交给它，它判断不出是文件，就直接把**自己的首页**返回给你
+     * （页面标题变成「GitHub加速下载代理」、正文是它的 logo 和广告链接）。
+     * 所以浏览的加速改用 [com.gh.dl.data.Net.browse] 那条路：DoH + GitHub 真实 IP 优选直连，
+     * 对本就是 HTML 的页面才是有效的。
+     */
+    fun isWebGithubHost(host: String): Boolean =
+        host.isNotBlank() && WEB_DOMAINS.any { host == it || host.endsWith(".$it") }
 
     /** 把 URL 改写成「前缀 + 原 URL」；不满足规则或已套过则原样返回（幂等） */
     fun rewrite(url: String): String {

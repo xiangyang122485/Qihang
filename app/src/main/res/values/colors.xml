@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      窗口底色：与 Compose 的 GitHubLight.background(#FAFAFA) 保持一致。
+      这里必须**显式写死**，不能靠主题的默认值——默认值来自父主题
+      android:Theme.Material，夜间配置下它是深灰，于是系统深色 + App 浅色时
+      「App 打开的一瞬间是整个屏幕发黑，然后才变白」（用户第八轮反馈的闪黑）。
+    -->
+    <color name="gh_window_bg">#FFFAFAFA</color>
+    <!-- 深色主题下的窗口底色，与 GitHubDark.background(#0F1419) 一致 -->
+    <color name="gh_window_bg_dark">#FF0F1419</color>
+</resources>

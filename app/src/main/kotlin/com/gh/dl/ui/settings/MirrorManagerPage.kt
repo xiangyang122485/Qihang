@@ -107,10 +107,12 @@ fun MirrorManagerPage(onBack: () -> Unit) {
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("高校镜像（清华·华为云·中科大等）作为直连目标站，用于下载 GitHub Release / 源码包。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("默认镜像会驱动「国内镜像」线路的下载地址；可导入自建/内网节点，可删除、可测速排序。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                CollapsibleNote(
+                    "这些镜像是干什么用的（点击展开）",
+                    "高校镜像（清华·华为云·中科大等）作为直连目标站，用于下载 GitHub Release / 源码包。\n" +
+                        "默认镜像会驱动「国内镜像」线路的下载地址；可导入自建/内网节点，可删除、可测速排序。\n" +
+                        "它们是**下载**用的直连站，和「设置 → 加速 → 浏览加速」里那批网页镜像站是两回事。"
+                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -118,11 +120,18 @@ fun MirrorManagerPage(onBack: () -> Unit) {
                     Button(onClick = {
                         testing = true
                         Thread {
-                            MirrorManager.speedTest(ctx)
+                            // try/finally 是必须的：speedTest 里是一串 HEAD 请求，
+                            // 任何一个抛出都会让这条线程死在半路 —— 原来 testing 就永远停在 true，
+                            // 按钮一直显示「测速中…」且再也点不动，只能退出这页重来。
+                            var err: String? = null
+                            try { MirrorManager.speedTest(ctx) } catch (e: Exception) {
+                                err = e.message ?: e.javaClass.simpleName
+                            }
+                            val msg = if (err == null) "测速完成" else "测速中断：$err"
                             Handler(Looper.getMainLooper()).post {
                                 testing = false
                                 refresh()
-                                toast(ctx, "测速完成")
+                                toast(ctx, msg)
                             }
                         }.start()
                     }) {
@@ -207,10 +216,11 @@ fun MirrorManagerPage(onBack: () -> Unit) {
         }
 
         Spacer(Modifier.height(8.dp))
-        Text(
-            "提示：这些镜像直连 GitHub 公开开源资源，不涉及私有仓库与 SSH。" +
-                "加速代理前缀（ghproxy 类）仍在「网络」页单独管理，两者互不影响。",
-            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+        CollapsibleNote(
+            "边界说明（点击展开）",
+            "这些镜像直连 GitHub 公开开源资源，不涉及私有仓库与 SSH。\n" +
+                "下载加速前缀（ghproxy 类）在「设置 → 加速 → 下载加速」管理，" +
+                "浏览用的网页镜像站在「设置 → 加速 → 浏览加速」管理，三者互不影响。"
         )
     }
 

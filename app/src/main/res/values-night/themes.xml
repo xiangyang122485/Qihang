@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      夜间配置下**仍然给浅色窗口底色**，这是第八轮「进 App 一瞬间是深色」的关键修法之一。
+
+      原因：这个 App 的默认外观是浅色（用户明确要求），而 Android 挑选启动窗口底色时
+      只看**系统**的 uiMode，不知道 App 内部选了浅色。原来这里没写 windowBackground，
+      于是走父主题 android:Theme.Material 的 night 默认值（深灰），系统深色 + App 浅色
+      = 先黑一帧再变白。
+
+      状态栏图标同理先按浅色外观给深色图标；真正的深浅色由 MainActivity 在
+      onCreate 里按 App 自己的选择 setTheme 覆盖，所以这一份只是「兜底不闪黑」。
+      这里也不写 android:windowDisablePreview，理由见 values/themes.xml。
+    -->
+    <style name="Theme.GhDl" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">@color/gh_window_bg</item>
+    </style>
+</resources>

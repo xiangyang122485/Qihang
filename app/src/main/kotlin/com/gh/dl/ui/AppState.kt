@@ -80,15 +80,52 @@ class DlJob(val id: Long, val name: String) {
  *    由前台 [com.gh.dl.CloneService] 直接读写，无法走 ViewModel，故留在全局。
  */
 object AppState {
-    var tab by mutableStateOf(0)
+
+    /**
+     * 底部主 Tab 序号。以前各处直接写 0/1/2/3 字面量，在中间插入一个新 Tab
+     * （「浏览」）就得逐处改、极易漏改，所以统一收成常量，只在这里定义一次。
+     * 顺序与底栏一致：解析器 · 浏览 · 下载 · 搜索 · 设置。
+     */
+    const val TAB_PARSER = 0
+    const val TAB_BROWSE = 1
+    const val TAB_DOWNLOADS = 2
+    const val TAB_SEARCH = 3
+    const val TAB_SETTINGS = 4
+
+    var tab by mutableStateOf(TAB_PARSER)
     /** 跨 Tab 跳转设置子页的待消费目标（key 字符串，见 [String.toSettingsRoute]）；消费后置 null */
     var settingsDeepLink by mutableStateOf<String?>(null)
+
+    /**
+     * 「App 已经在前台时又收到分享 / 深链」的投递槽：MainActivity.onNewIntent 写入，
+     * GhApp 消费后置空。用 null 区分「没有新链接」，避免重复解析同一个链接。
+     */
+    var pendingLink by mutableStateOf<String?>(null)
     var initialized by mutableStateOf(false)
 
-    /** 外观模式：system / light / dark。由「设置 → 外观」写入，[GhTheme] 实时读取并切换配色，无需重启 */
-    var themeMode by mutableStateOf("system")
+    /**
+     * 外观模式：system / light / dark。由「设置 → 外观」写入，[com.gh.dl.ui.theme.GhTheme]
+     * 实时读取并切换配色，无需重启。
+     *
+     * 第八轮把初值从 "system" 改成 **"light"**：这里的值会在启动早期被
+     * [com.gh.dl.ui.SettingsViewModel.initSettings] 用磁盘上的设置覆盖，但覆盖发生在
+     * 第一帧**之后**，所以初值就是「用户还没存过设置时看到的外观」。
+     * 原来初值是 system，于是系统深色时第一帧按深色渲染，等 initSettings 灌进
+     * 默认值（旧默认同样是 system，值没变但触发了一次重组）或用户其实想要浅色，
+     * 中间就是一次可见的翻色。用户的原话：「这个 APP 我默认是浅色的」。
+     * 与 [com.gh.dl.data.Settings.THEME_DEFAULT] 必须一致。
+     */
+    var themeMode by mutableStateOf(com.gh.dl.data.Settings.THEME_DEFAULT)
 
-    /** 国内源探活结果（启动后填充）；[mirrorProbed] 表示是否已探过一次 */
+    /**
+     * 国内源探活结果（启动后填充）；[mirrorProbed] 表示是否已探过一次。
+     *
+     * **约定：只在主线程写。**探活在 Thread 里跑（九个 HEAD 请求），但结果一律 MAIN.post
+     * 回主线程再赋值（GhApp、DiagPage 两个调用点都这么写）。
+     * 跨线程写 `by mutableStateOf` 虽然 Compose 允许（会打一条警告），但本项目的界面状态
+     * 写入口径统一是「主线程」，混一条后台直写进来，将来出问题极难定位；
+     * 第八轮排查时这两处正是「裸 Thread 直接写 AppState」的漏网之鱼。
+     */
     var mirrorProbe by mutableStateOf<List<MirrorSources.Probe>>(emptyList())
     var mirrorProbed by mutableStateOf(false)
 
@@ -116,7 +153,55 @@ object AppState {
     var gitcodeToken by mutableStateOf("")
     var proxy by mutableStateOf("")
     var channel by mutableStateOf(Channels.OFFICIAL)
+    /**
+     * 下载加速（ghproxy 风格**文件**前缀）总开关，顶栏闪电控制。
+     * 与 [browseAccelOn] 是两套独立开关：实测前缀代理不了网页（会返回它自己的首页），
+     * 所以浏览必须单独一档，见 [browseAccelOn] 与 [com.gh.dl.data.GhView] 的说明。
+     */
     var accelOn by mutableStateOf(false)
+    /**
+     * 浏览加速（githubfast.com 这类**网页**镜像）总开关，只在「设置 → 加速」和浏览页顶栏生效。
+     * 开着 = 抓取先走网页镜像、失败再直连 GitHub；关着 = 只直连
+     * （第九轮起 DoH 优选也是独立开关且默认关，所以关着时就是纯系统 DNS 直连）。
+     *
+     * 第九轮按用户要求「敏感功能一律默认关闭」把默认值从 true 改成 **false**：
+     * 这一档会让页面 HTML 先经过第三方镜像站，属于「把访问内容交给中转」，
+     * 所以出厂状态必须是关，由用户自己决定开。旧默认开的时候，
+     * 使用文档还写着「都默认关闭」——那句在第八轮其实是不成立的，现在才对齐。
+     */
+    var browseAccelOn by mutableStateOf(false)
+    /**
+     * 「DoH + 真实 IP 优选」开关（第九轮，默认 **false**）。
+     * 打开才会向第三方公共 DoH（dns.alidns.com / doh.pub）查你的域名、并自动外连候选 IP。
+     * 真值同时写进 [com.gh.dl.data.Net.dnsPinningOn]，因为 data 层不读 ViewModel。
+     */
+    var dnsPinningOn by mutableStateOf(false)
+    /**
+     * 「启动时自动探活 9 个国内镜像源」开关（第九轮，默认 **false**）。
+     * 关掉时开机一个请求都不发；想看延迟就去「线路诊断」手动点「立即探活」。
+     */
+    var mirrorProbeOn by mutableStateOf(false)
+    /**
+     * 浏览的 HTML 解析引擎，取值见 [com.gh.dl.data.GhView] 的 ENGINE_* 常量。
+     * 默认 Jsoup HTML5：实测它已经是「自带 CSS 选择器 + 容错最强」的那一档，
+     * 别的引擎只在特定场景更快，所以做成可选而不是换默认值。
+     */
+    var parseEngine by mutableStateOf("jsoup")
+    /** 浏览页图片的显示方式，取值见 [com.gh.dl.data.GhView] 的 IMAGE_* 常量 */
+    var imageMode by mutableStateOf("local")
+    /**
+     * 浏览的抓取器：内置 OkHttp（默认）还是本机的命令行工具。
+     * 用户问「慢是不是 curl 的问题」——实测不是：同一页 curl 抓取 0.9s、App 抓取 1.4s，
+     * 慢的是取图阶段。但仍按要求把 wget / curl 接成可选抓取器（见 [com.gh.dl.data.Fetcher]），
+     * 因为某些机型上系统 curl 走了自己的 DNS/代理配置，反而比 App 直连快。
+     */
+    var fetcher by mutableStateOf("okhttp")
+    /**
+     * 解析器页是否记录历史链接（第六轮新增，「设置 → 浏览」里可关）。
+     * 第九轮改为**默认关闭**：这是在手机本地留存「用户看过哪些仓库」的记录，
+     * 属于敏感项，出厂不该自动记；要记由用户自己开。
+     */
+    var historyOn by mutableStateOf(false)
     var verifyOn by mutableStateOf(true)
     var lfsOn by mutableStateOf(true)
     var engine by mutableStateOf("libgit2")

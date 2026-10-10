@@ -24,6 +24,27 @@ fun copyText(ctx: Context, text: String, label: String = "已复制") {
     toast(ctx, label)
 }
 
+/**
+ * 后台取一个值、回主线程播报结果（必须在主线程调用）。
+ *
+ * 为什么要有它：这类「点一下 → 联网算一下 → 复制/提示」的动作用的全是裸 Thread，
+ * 里面一旦抛异常（断网、镜像站 500、校验文件没给），线程直接死掉，
+ * 用户看到的是「按了没反应」——既没有失败提示，也没有日志。
+ * runCatching 兜住之后统一回主线程提示，失败至少要说出来。
+ * 只在主线程 post 结果，不写任何 Compose 状态，所以调用方在哪条线程都行。
+ */
+fun verifying(ctx: Context, what: String, label: String = what + "已复制", block: () -> String?) {
+    Thread {
+        val v = runCatching(block).getOrNull()
+        MAIN.post {
+            when {
+                v != null -> copyText(ctx, v, label)
+                else -> toast(ctx, "取不到$what：这个文件可能没有提供，或网络不通")
+            }
+        }
+    }.start()
+}
+
 /** 递归计算目录（含子目录）字节大小 */
 fun dirSize(f: File?): Long {
     if (f == null || !f.exists()) return 0L
@@ -85,6 +106,6 @@ fun startClone(ctx: Context, slug: String) {
     CloneJob.result = ""
     CloneJob.ok = false
     CloneJob.startedAt = System.currentTimeMillis()
-    AppState.tab = 1
+    AppState.tab = AppState.TAB_DOWNLOADS
     CloneService.start(ctx.applicationContext, slug)
 }

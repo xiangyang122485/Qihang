@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.gh.dl.data.Channels
 import com.gh.dl.data.Fetch
+import com.gh.dl.data.History
 import com.gh.dl.data.Jsd
 import com.gh.dl.data.Mirror
 import com.gh.dl.data.MirrorManager
@@ -77,6 +78,34 @@ class ParserViewModel : ViewModel() {
     var showParseDialog by mutableStateOf(false)
     var pendingInput by mutableStateOf("")
 
+    // ---- 解析历史（第六轮新增，「设置 → 浏览」里可关） ----
+    /** 内存镜像，界面直接渲染它；真值在 SharedPreferences（见 [com.gh.dl.data.History]） */
+    val history = mutableStateListOf<History.Entry>()
+    var showHistory by mutableStateOf(false)
+
+    /** 启动 / 设置变更后重新读一遍（关掉开关时列表要立刻按用户预期变化，所以由界面主动调） */
+    fun reloadHistory(ctx: android.content.Context) {
+        history.clear()
+        history.addAll(History.load(ctx))
+    }
+
+    fun removeHistory(ctx: android.content.Context, slug: String) {
+        History.remove(ctx, slug)
+        reloadHistory(ctx)
+    }
+
+    fun clearHistory(ctx: android.content.Context) {
+        History.clear(ctx)
+        reloadHistory(ctx)
+    }
+
+    /** 点历史条目：填回输入框并重新解析（用户要的就是「不用再去翻聊天记录找链接」） */
+    fun openHistory(ctx: android.content.Context, e: History.Entry) {
+        input = e.input
+        showHistory = false
+        doLoad(ctx, e.input)
+    }
+
     // -----------------------------------------------------------------------
     // 解析：GitHub 官方 API → 国内镜像 → jsDelivr
     // -----------------------------------------------------------------------
@@ -127,7 +156,11 @@ class ParserViewModel : ViewModel() {
                     }
                 } catch (e: Exception) { /* 忽略 */ }
 
+                // 记历史放在这里而不是入口处：解析失败的链接（打错的、已删的仓库）
+                // 记进去只会变成一条点了必然报错的垃圾项。
+                History.record(ctx, raw, s, r.fullName)
                 MAIN.post {
+                    reloadHistory(ctx)
                     repo = r
                     releases = rel
                     refs = list
@@ -136,7 +169,7 @@ class ParserViewModel : ViewModel() {
                         if (rel.any { it.assets.any { x -> osOf(x.name) == "android" } }) "android" else "all"
                     netSummary = "官方线路可用"
                     loading = false
-                    if (source == "domestic" && domestic != "ghproxy") {
+                    if (source == "domestic") {
                         doMirror(ctx, preferBase = domesticBase(ctx))
                     }
                 }
@@ -262,7 +295,7 @@ class ParserViewModel : ViewModel() {
             slug.replace("/", "-") + "-" + jsdVer + ".zip"))
         job.kind = "pack"
         downloads.downloads.add(0, job)
-        AppState.tab = 1
+        AppState.tab = AppState.TAB_DOWNLOADS
         downloads.runPack(ctx, job, slug, jsdVer, jsdTree)
     }
 
@@ -293,23 +326,19 @@ class ParserViewModel : ViewModel() {
     }
 
     /**
-     * 解析器页「源选择」生效：把官方源 / 国内源（高校镜像 or 加速代理）映射到下载路由。
+     * 解析器页「源选择」生效：把官方源 / 国内源（高校镜像）映射到下载路由。
+     *
+     * [domestic] 的取值只可能是 [com.gh.dl.data.MirrorManager] 管理的镜像站 id（tuna/ustc/…），
+     * 界面上没有「加速代理」这一项，所以这里不再判断已删除的 "ghproxy" 分支——
+     * 那段判断永远为假，只会让读代码的人以为还存在这条路径。加速开关只由「闪电」按钮控制。
      */
     fun applySource(ctx: Context) {
         when (source) {
             "domestic" -> {
-                if (domestic == "ghproxy") {
-                    settings.accelOn = true
-                    settings.channel = if (settings.custom.isNotBlank()) Channels.CUSTOM else Channels.OFFICIAL
-                    if (settings.custom.isBlank()) {
-                        toast(ctx, "已选「加速代理」，请到「设置→网络通道」填写 ghproxy 前缀")
-                    }
-                } else {
-                    // 高校镜像：下载走镜像站（NEVER_PREFIX 不会被套前缀），而 GitHub 索引仍按用户「闪电」开关
-                    // 走前缀 / 直连。此处不能再强制关掉加速，否则国内源搜索里的 GitHub 索引会被直连墙掉、
-                    // 加上 Gitee 偶发限流，两个后端一起失败就会误报「网络异常」。
-                    settings.channel = Channels.OFFICIAL
-                }
+                // 高校镜像：下载走镜像站（NEVER_PREFIX 不会被套前缀），而 GitHub 索引仍按用户「闪电」开关
+                // 走前缀 / 直连。此处不能再强制关掉加速，否则国内源搜索里的 GitHub 索引会被直连墙掉、
+                // 加上 Gitee 偶发限流，两个后端一起失败就会误报「网络异常」。
+                settings.channel = Channels.OFFICIAL
             }
             else -> {
                 // 解析 / 搜索源切换不应覆盖用户自己的加速开关；加速只由「闪电」按钮控制。
@@ -333,6 +362,18 @@ class ParserViewModel : ViewModel() {
             doLoad(ctx, "https://github.com/$slug")
         }
         doDiagnose(ctx)
+    }
+
+    /**
+     * 「浏览」按钮要打开的仓库网页地址。
+     * 优先用已解析出来的 htmlUrl；还没解析时，只要能认出 owner/repo 就直接拼官方地址
+     * （输入框允许写 owner/repo 这种简写，parseSlug 已支持）。
+     * 认不出来返回 null，按钮置灰。
+     */
+    fun browseUrl(): String? {
+        repo?.htmlUrl?.takeIf { it.isNotBlank() }?.let { return it }
+        val s = parseSlug(input) ?: if (slug.isNotBlank()) slug else null
+        return s?.let { "https://github.com/$it" }
     }
 
     /** 当前解析器页所有可勾选的下载项（Release 资产 / 国内镜像文件 / jsDelivr 文件） */
@@ -385,7 +426,7 @@ class ParserViewModel : ViewModel() {
                 input = "https://github.com/${h.fullName}"
                 source = if (h.domestic) "domestic" else "official"
                 applySource(ctx)
-                AppState.tab = 0
+                AppState.tab = AppState.TAB_PARSER
                 doLoad(ctx, input)
             }
             "gitee", "gitcode" -> {

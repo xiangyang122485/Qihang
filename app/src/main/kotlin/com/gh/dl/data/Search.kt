@@ -155,11 +155,15 @@ object Search {
         return out
     }
 
-    /** GitCode（gitcode.com，CSDN 旗下，底层是 GitLab，带公开搜索 API，无鉴权） */
-    fun gitcode(q: String): List<Hit> {
+    /**
+     * GitCode（gitcode.com，CSDN 旗下，底层是 GitLab）。
+     * 该 API 需要访问令牌；[token] 由设置页填入、只发往 gitcode.com 本身。
+     */
+    fun gitcode(q: String, token: String = com.gh.dl.ui.AppState.gitcodeToken): List<Hit> {
         val url = "https://gitcode.com/api/v4/projects?search=${enc(q)}" +
             "&order_by=stars&sort=desc&per_page=30&visibility=public&membership=false"
-        val arr = JSONArray(Net.text(url))
+        val auth = if (token.isBlank()) null else "Bearer $token"
+        val arr = JSONArray(Net.text(url, auth))
         val out = ArrayList<Hit>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue

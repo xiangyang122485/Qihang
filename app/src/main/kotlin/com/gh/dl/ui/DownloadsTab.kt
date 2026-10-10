@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -63,7 +64,6 @@ fun DownloadsTab() {
     val vmSettings = LocalSettingsVM.current
 
     val ctx = LocalContext.current
-    val nav = LocalSettingsNav.current
     var tick by remember { mutableStateOf(System.currentTimeMillis()) }
     var showLink by remember { mutableStateOf<String?>(null) }
 
@@ -150,146 +150,147 @@ fun DownloadsTab() {
                             }) { Text("批量删除", fontSize = 12.sp) }
                             Spacer(Modifier.width(8.dp))
                             TextButton(onClick = {
-                                vmDownloads.downloads.removeAll { it.done && !it.failed }
+                                vmDownloads.clearCompleted(ctx)
                             }) { Text("清除已完成", fontSize = 12.sp) }
                         }
                     }
                 }
             }
 
-            vmDownloads.downloads.forEach { job ->
-                item {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        if (vmDownloads.dlMultiSelect) {
-                            Checkbox(
-                                checked = vmDownloads.dlSel.contains(job.id),
-                                onCheckedChange = {
-                                    if (it) vmDownloads.dlSel.add(job.id) else vmDownloads.dlSel.remove(job.id)
-                                }
+            // 必须带 key：这一页在下载进行中每 500ms 刷新一次 tick，列表又会增删任务。
+            // 没有 key 时 Compose 按下标对齐，进度条/按钮状态会串到别的任务卡上
+            // （A 的进度显示在 B 那一行），还会让整片卡片重排 —— 列表滚不动、发涩。
+            items(vmDownloads.downloads, key = { it.id }) { job ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (vmDownloads.dlMultiSelect) {
+                        Checkbox(
+                            checked = vmDownloads.dlSel.contains(job.id),
+                            onCheckedChange = {
+                                if (it) vmDownloads.dlSel.add(job.id) else vmDownloads.dlSel.remove(job.id)
+                            }
+                        )
+                    }
+                    GhCard(
+                        Modifier
+                            .weight(1f)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = { showLink = job.url }
                             )
-                        }
-                        GhCard(
-                            Modifier
-                                .weight(1f)
-                                .combinedClickable(
-                                    onClick = {},
-                                    onLongClick = { showLink = job.url }
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                StatusDot(
+                                    color = when {
+                                        job.failed -> MaterialTheme.colorScheme.error
+                                        job.done -> MaterialTheme.colorScheme.secondary
+                                        job.running -> MaterialTheme.colorScheme.primary
+                                        job.paused -> MaterialTheme.colorScheme.warning
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(end = 6.dp)
                                 )
-                        ) {
-                            Column(Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    StatusDot(
-                                        color = when {
-                                            job.failed -> MaterialTheme.colorScheme.error
-                                            job.done -> MaterialTheme.colorScheme.secondary
-                                            job.running -> MaterialTheme.colorScheme.primary
-                                            job.paused -> MaterialTheme.colorScheme.warning
-                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
-                                        modifier = Modifier.padding(end = 6.dp)
-                                    )
-                                    Text(job.name, fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                                        modifier = Modifier.weight(1f))
-                                    if (job.paused) {
-                                        IconButton(
-                                            onClick = { vmDownloads.resumeDownload(ctx, job) },
-                                            modifier = Modifier.width(28.dp).height(28.dp)
-                                        ) {
-                                            Icon(Icons.Filled.PlayArrow, contentDescription = "继续",
-                                                tint = MaterialTheme.colorScheme.secondary)
-                                        }
-                                    } else if (job.running) {
-                                        CircularProgressIndicator(Modifier.width(16.dp).height(16.dp))
-                                        Spacer(Modifier.width(2.dp))
-                                        IconButton(
-                                            onClick = { vmDownloads.pauseDownload(job) },
-                                            modifier = Modifier.width(28.dp).height(28.dp)
-                                        ) {
-                                            Icon(Icons.Filled.Pause, contentDescription = "暂停")
-                                        }
+                                Text(job.name, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f))
+                                if (job.paused) {
+                                    IconButton(
+                                        onClick = { vmDownloads.resumeDownload(ctx, job) },
+                                        modifier = Modifier.width(28.dp).height(28.dp)
+                                    ) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = "继续",
+                                            tint = MaterialTheme.colorScheme.secondary)
                                     }
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                // 已完成 → 画满格（停止动画）；有总大小 → 真实进度；
-                                // 下载中且总大小未知 → 才用 indeterminate「走动」条；
-                                // 暂停/失败且未知大小 → 不画条（避免已完成还转圈）。
-                                val knownTotal = job.total > 0
-                                val progress = when {
-                                    job.done -> 1f
-                                    knownTotal -> (job.bytes.toFloat() / job.total).coerceIn(0f, 1f)
-                                    else -> 0f
-                                }
-                                if (job.done || knownTotal) {
-                                    LinearProgressIndicator(
-                                        progress = { progress },
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
                                 } else if (job.running) {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                val pct = when {
-                                    job.done -> " · 100%"
-                                    knownTotal -> " · ${(job.bytes * 100 / job.total)}%"
-                                    else -> ""
-                                }
-                                val sizeText = if (knownTotal)
-                                    fmtSize(job.bytes) + " / " + fmtSize(job.total)
-                                else fmtSize(job.bytes) + (if (job.running) "（总大小未知）" else "")
-                                Text(
-                                    sizeText + pct +
-                                        (if (job.speed > 0 && job.running) " · " + fmtSize(job.speed) + "/s" else ""),
-                                    fontSize = 12.sp
-                                )
-                                if (job.running) {
-                                    Text(
-                                        "已用时 " + hhmmss(tick - job.startedAt),
-                                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (job.where.isNotBlank()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(job.where, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
-                                }
-                                if (job.msg.isNotBlank()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        job.msg, fontSize = 11.sp,
-                                        color = if (job.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (job.sha.isNotBlank()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(
-                                                "SHA256: " + job.sha.take(16) + "…" + job.sha.takeLast(8),
-                                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            if (job.verify.isNotBlank()) {
-                                                Text(
-                                                    job.verify, fontSize = 11.sp,
-                                                    color = if (job.verify.startsWith("✗"))
-                                                        MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary
-                                                )
-                                            }
-                                        }
-                                        Spacer(Modifier.width(4.dp))
-                                        TextButton(onClick = { copyText(ctx, job.sha, "SHA256 已复制") }) {
-                                            Text("复制", fontSize = 11.sp)
-                                        }
+                                    CircularProgressIndicator(Modifier.width(16.dp).height(16.dp))
+                                    Spacer(Modifier.width(2.dp))
+                                    IconButton(
+                                        onClick = { vmDownloads.pauseDownload(job) },
+                                        modifier = Modifier.width(28.dp).height(28.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Pause, contentDescription = "暂停")
                                     }
                                 }
-                                if (job.failed && job.url.isNotBlank()) {
-                                    Spacer(Modifier.height(6.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            // 已完成 → 画满格（停止动画）；有总大小 → 真实进度；
+                            // 下载中且总大小未知 → 才用 indeterminate「走动」条；
+                            // 暂停/失败且未知大小 → 不画条（避免已完成还转圈）。
+                            val knownTotal = job.total > 0
+                            val progress = when {
+                                job.done -> 1f
+                                knownTotal -> (job.bytes.toFloat() / job.total).coerceIn(0f, 1f)
+                                else -> 0f
+                            }
+                            if (job.done || knownTotal) {
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            } else if (job.running) {
+                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            val pct = when {
+                                job.done -> " · 100%"
+                                knownTotal -> " · ${(job.bytes * 100 / job.total)}%"
+                                else -> ""
+                            }
+                            val sizeText = if (knownTotal)
+                                fmtSize(job.bytes) + " / " + fmtSize(job.total)
+                            else fmtSize(job.bytes) + (if (job.running) "（总大小未知）" else "")
+                            Text(
+                                sizeText + pct +
+                                    (if (job.speed > 0 && job.running) " · " + fmtSize(job.speed) + "/s" else ""),
+                                fontSize = 12.sp
+                            )
+                            if (job.running) {
+                                Text(
+                                    "已用时 " + hhmmss(tick - job.startedAt),
+                                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (job.where.isNotBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(job.where, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                            }
+                            if (job.msg.isNotBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    job.msg, fontSize = 11.sp,
+                                    color = if (job.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (job.sha.isNotBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
                                         Text(
-                                            "下载失败", fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.weight(1f)
+                                            "SHA256: " + job.sha.take(16) + "…" + job.sha.takeLast(8),
+                                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                        FilledTonalButton(onClick = { vmDownloads.retryDownload(ctx, job) }) {
-                                            Text("重试", fontSize = 12.sp)
+                                        if (job.verify.isNotBlank()) {
+                                            Text(
+                                                job.verify, fontSize = 11.sp,
+                                                color = if (job.verify.startsWith("✗"))
+                                                    MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary
+                                            )
                                         }
+                                    }
+                                    Spacer(Modifier.width(4.dp))
+                                    TextButton(onClick = { copyText(ctx, job.sha, "SHA256 已复制") }) {
+                                        Text("复制", fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                            if (job.failed && job.url.isNotBlank()) {
+                                Spacer(Modifier.height(6.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "下载失败", fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    FilledTonalButton(onClick = { vmDownloads.retryDownload(ctx, job) }) {
+                                        Text("重试", fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -372,7 +373,11 @@ fun DownloadsTab() {
             confirmButton = {
                 Button(onClick = {
                     AppState.needAuthGuide = false
-                    nav.navigate(SettingsRoute.Download.route)
+                    // 设置页的 NavHost 此刻还没组合（当前在下载 Tab），直接 navigate 会命中
+                    // 「Navigation graph has not been set」。走跨 Tab 跳转的正规路子：
+                    // 先切到设置 Tab，由 SettingsTab 挂载后消费 settingsDeepLink。
+                    AppState.tab = AppState.TAB_SETTINGS
+                    AppState.settingsDeepLink = "download"
                 }) { Text("去设置选择") }
             },
             dismissButton = {

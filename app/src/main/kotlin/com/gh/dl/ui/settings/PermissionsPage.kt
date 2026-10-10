@@ -38,16 +38,22 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -69,18 +75,58 @@ fun PermissionsPage(onBack: () -> Unit) {
     val notiGranted = if (Build.VERSION.SDK_INT >= 33)
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED else true
-    var notiState by remember { mutableStateOf(notiGranted) }
 
+    // 这一页四项状态原来是在组合里直接查系统的（通知 / 电池优化 / 安装未知应用 / 存储授权），
+    // 两个毛病都在这轮一起处理：
+    //  1) 其中「存储授权」那项内部是一次 ContentResolver.query（binder + 可能冷启动 provider），
+    //     写在组合里等于每次重组一次 IPC —— 和本轮清掉的其它「组合里做 IO」是同一类问题；
+    //  2) 状态只在**进入本页时**取一次。用户的真实操作是「点进去系统设置 → 授权 → 按返回回来」，
+    //     回来时组合未必重跑，那一行还写着「未授权」，于是「明明授权了却还显示没授权」。
+    // 现在：一次性的读取放 IO 线程，并且**每次回到前台（ON_RESUME）重读一遍**。
+    val vmSettings = LocalSettingsVM.current
+    var notiState by remember { mutableStateOf(notiGranted) }
+    var batteryOk by remember { mutableStateOf(false) }
+    var installOk by remember { mutableStateOf(false) }
+    var storeName by remember { mutableStateOf(vmSettings.sharedName) }
+    // 申请通知权限的回调也要改这个状态，所以声明在它之后
     val notiLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { notiState = it }
-
-    val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-    val batteryOk = try { pm.isIgnoringBatteryOptimizations(ctx.packageName) } catch (e: Exception) { false }
-
-    val installOk = if (Build.VERSION.SDK_INT >= 26) ctx.packageManager.canRequestPackageInstalls() else true
-
-    val storeOk = Store.isSet(ctx)
+    // resumeTick：每次 ON_RESUME +1，用它当 LaunchedEffect 的 key 触发重读
+    var resumeTick by remember { mutableIntStateOf(0) }
+    val lifecycle = LocalLifecycleOwner.current
+    DisposableEffect(lifecycle) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) resumeTick++
+        }
+        lifecycle.lifecycle.addObserver(obs)
+        onDispose { lifecycle.lifecycle.removeObserver(obs) }
+    }
+    LaunchedEffect(resumeTick) {
+        val r = withContext(Dispatchers.IO) {
+            val n = runCatching {
+                val pm2 = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+                pm2.isIgnoringBatteryOptimizations(ctx.packageName)
+            }.getOrDefault(false)
+            val i = runCatching {
+                Build.VERSION.SDK_INT < 26 || ctx.packageManager.canRequestPackageInstalls()
+            }.getOrDefault(false)
+            val s = if (Store.isSet(ctx)) Store.displayName(ctx) else ""
+            // 通知权限是本地检查（无 IPC），一并在这里读，口径和其他三项一致
+            val noti = Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+            n to i to (s to noti)
+        }
+        batteryOk = r.first.first
+        installOk = r.first.second
+        storeName = r.second.first
+        vmSettings.sharedName = r.second.first
+        notiState = r.second.second
+    }
+    // Store.isSet 也是本地 SP 读取（无 IPC），保留它做兜底：目录被外部撤销授权时
+    // displayName 会变空，但 isSet 未必同步，两种情况都算「没授权」才安全
+    val storeOk = storeName.isNotBlank() && Store.isSet(ctx)
 
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -137,7 +183,8 @@ fun PermissionsPage(onBack: () -> Unit) {
         PermissionRow(
             icon = Icons.Filled.FolderOpen,
             title = "存储授权（SAF）",
-            state = if (storeOk) "已授权：${Store.displayName(ctx)}" else "未授权（建议设置）",
+            state = if (storeOk) "已授权：" + storeName.ifBlank { "（名称读取中…）" }
+                    else "未授权（建议设置）",
             ok = storeOk,
             onClick = {
                 // 跳到「下载」页让用户挑一个共享文件夹

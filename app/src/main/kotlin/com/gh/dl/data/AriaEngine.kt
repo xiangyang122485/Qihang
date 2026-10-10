@@ -28,8 +28,26 @@ object AriaEngine {
     @Volatile
     private var binFile: File? = null
 
-    /** 二进制是否就绪 */
-    fun available(ctx: Context): Boolean = resolve(ctx) != null
+    /**
+     * 二进制与 CA 根证书包都就绪才算可用。
+     *
+     * CA 是硬性条件：[download] 绝不在拿不到根证书时退回 --check-certificate=false，
+     * 那等于把要装到手机上的二进制交给中间人。缺任何一样都由调用方回退到
+     * OkHttp 引擎（走系统信任链，证书校验始终开启）。
+     */
+    fun available(ctx: Context): Boolean = resolve(ctx) != null && cacert(ctx) != null
+
+    /**
+     * App 版本名，进程内只查一次。
+     * [cacert] 需要它来判断「新版带的根证书要不要重解」，而 [available] 会被下载设置页
+     * 在组合时反复调用——`getPackageInfo` 是一次 binder 调用，不该每次重组都发。
+     * 版本名在进程生命周期内不会变（覆盖安装会重启进程），所以缓存是安全的。
+     */
+    @Volatile private var version: String? = null
+
+    private fun appVersion(ctx: Context): String = version ?: runCatching {
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
+    }.getOrDefault("?").also { version = it }
 
     @Synchronized
     private fun resolve(ctx: Context): File? {
@@ -52,15 +70,42 @@ object AriaEngine {
         return null
     }
 
-    /** 解开 CA 证书包（assets/aria2/cacert.pem）；没有则返回 null，调用方关掉证书检查 */
+    /**
+     * 给「内置的命令行抓取器」（curl / wget）用的同一份根证书包。
+     *
+     * 第八轮内置 curl / wget 之后复用它：静态编译的 curl / wget 读不到 Android 的系统信任库
+     * （那里不是它们认的 PEM 文件路径），必须显式喂一份 PEM 才会做完整证书校验。
+     * 与 aria2 共用同一份、同一套按版本重解的规则，避免出现两份不同步的 CA。
+     */
+    fun caBundleFor(ctx: Context): File? = cacert(ctx)
+
+    /**
+     * 解开 CA 证书包（assets/aria2/cacert.pem）；没有则返回 null，调用方按不可用回退引擎。
+     *
+     * **必须按 App 版本号重解**：这是一份打进 APK 的静态根证书集合，不会跟着系统信任库更新。
+     * 老写法是「文件存在且非空就直接用」，于是第一次启动解出来的那一份会一直用到卸载重装——
+     * 用户升级 App、新版带的是更新过的根证书，磁盘上却还是旧的，
+     * 等某个根过期就开始报 SSL 校验失败，而这种情况在代码里完全看不出问题。
+     * 现在版本号写进同目录的一个标记文件，对不上就重新解（顺带覆盖过期根被剔除的情况）。
+     */
     private fun cacert(ctx: Context): File? {
-        val out = File(ctx.filesDir, "aria2/cacert.pem")
-        if (out.exists() && out.length() > 0) return out
+        val dir = File(ctx.filesDir, "aria2")
+        val out = File(dir, "cacert.pem")
+        val stamp = File(dir, "cacert.ver")
+        val ver = appVersion(ctx)
+        val cached = runCatching { stamp.readText().trim() }.getOrDefault("")
+        if (out.exists() && out.length() > 0 && cached == ver) return out
         return try {
+            dir.mkdirs()
+            // 先写临时文件再改名：解到一半被杀不会留下半份证书包（半份会导致校验整体失败，
+            // 而表现只是「下载报证书错误」，很难想到是这儿坏的）
+            val tmp = File(dir, "cacert.pem.tmp")
             ctx.assets.open("aria2/cacert.pem").use { ins ->
-                out.parentFile?.mkdirs()
-                out.outputStream().use { ins.copyTo(it, 1 shl 16) }
+                tmp.outputStream().use { ins.copyTo(it, 1 shl 16) }
             }
+            if (tmp.length() == 0L) { runCatching { tmp.delete() }; return null }
+            if (!tmp.renameTo(out)) { runCatching { out.delete() }; tmp.copyTo(out, overwrite = true) }
+            runCatching { stamp.writeText(ver) }
             out
         } catch (_: Exception) {
             null
@@ -81,14 +126,16 @@ object AriaEngine {
         onProgress: (Long, Long, Long) -> Unit,
         cancelHolder: AtomicReference<(() -> Unit)?>,
         resume: Boolean = false,
-        totalHint: Long = -1L
+        totalHint: Long = -1L,
+        jobKey: Long = 0L
     ): Fetch.Saved {
         val bin = resolve(ctx)
             ?: throw RuntimeException("Aria2 二进制未就绪（需要 arm64-v8a 的 libaria2c.so，当前设备 ABI 不支持）")
         val outDir = File(ctx.cacheDir, "ariatmp")
         outDir.mkdirs()
-        val tmp = File(outDir, name)
-        val ctrl = File(outDir, "$name.aria2")
+        val tmp = File(outDir, Fetch.tmpName(jobKey, name))
+        // aria2 的控制文件名 = 输出文件名 + ".aria2"，所以必须跟着 tmp 走
+        val ctrl = File(outDir, tmp.name + ".aria2")
         // 续传：保留临时文件与控制文件；否则清掉旧残留
         if (tmp.exists() && !resume) {
             tmp.delete()
@@ -99,16 +146,17 @@ object AriaEngine {
             bin.absolutePath,
             "-x", "16", "-s", "16", "-k", "1M",
             "--dir", outDir.absolutePath,
-            "-o", name,
+            "-o", tmp.name,
             "--summary-interval=1",
             "--console-log-level=warn",
             "--allow-overwrite=true",
             "-c" // 断点续传：暂停后保留的 .aria2 控制文件让 aria2c 接着下
         )
-        // HTTPS 证书：有 CA 包就开着校验；没有就关掉（下载层另有 SHA256 兜底完整性）
+        // HTTPS 证书：必须带 CA 包做完整校验。拿不到就直接失败（调用方已按
+        // [available] 回退到 OkHttp 引擎），这里绝不开 --check-certificate=false。
         val ca = cacert(ctx)
-        if (ca != null) args += listOf("--ca-certificate", ca.absolutePath)
-        else args += "--check-certificate=false"
+            ?: throw RuntimeException("Aria2 缺少 CA 根证书包，本次改用其它引擎")
+        args += listOf("--ca-certificate", ca.absolutePath)
         args += url
 
         val pb = ProcessBuilder(args)

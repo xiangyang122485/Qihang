@@ -1,3 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标背景：取用户图标边缘的深岩灰（RGB 87,105,118），与前景满铺图无缝衔接 -->
-<color xmlns:android="http://schemas.android.com/apk/res/android">#576976</color>
+<!--
+  自适应图标背景：取用户图标边缘的深岩灰（RGB 87,105,118），与前景满铺图无缝衔接。
+
+  原来这里写的是 <color>#576976</color>，但 <color> 只能放在 res/values/ 里当颜色资源，
+  放在 res/drawable/ 下就不是一个合法的 drawable —— 系统按目录类型把它当 drawable 解析，
+  结果是图标背景拿不到颜色（露白/露黑），lint 也直接报 Error 卡住构建。
+  纯色背景在 drawable 里的正确写法是带 solid 的 shape。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#576976" />
+</shape>

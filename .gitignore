@@ -1,6 +1,9 @@
 # ===== Android / Gradle 通用忽略 =====
 *.apk
 *.aar
+# 例外：OkDownload 本地 aar 是编译必需依赖（app/build.gradle.kts 里 files("libs/...")），
+# 若被忽略则新克隆没有 app/libs/，源码根本构建不了。
+!app/libs/*.aar
 *.ap_
 *.aab
 *.dex

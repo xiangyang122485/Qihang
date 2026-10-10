@@ -24,10 +24,19 @@ object Fetch {
     class PausedException : RuntimeException("用户已暂停")
 
     /**
-     * 流式下载并写到目标位置。
+     * 流式下载：先写 App 私有的临时文件（支持 Range 断点续写），
+     * 完成后再由 [commit] 搬到最终落盘位置（SAF 共享文件夹 / 应用目录）。
+     *
+     * 为什么要中转：SAF 的 Uri 不能追加写，之前「直接写 SAF」的写法让
+     * canResume 恒为 false —— 点「继续」每次都从头重下，而界面写着「可断点续传」。
+     * 现在三个引擎（单线程 / OkDownload / Aria2）的临时文件模型一致，续传真的生效；
+     * SHA256 也一定是对完整文件算的（不是只对续传那一段算）。
+     *
+     * 代价：大文件临时占两倍磁盘（临时 + 成品），完成即删临时文件。
+     *
      * @param onProgress (已下载字节, 总字节或 -1, 瞬时速度 B/s)
      * @param cancelHolder 引擎启动时把「停止当前传输」的回调塞进来，供暂停按钮调用
-     * @param resume true=续传（仅「应用目录」路径支持真正的 Range 断点续写；SAF 共享文件夹路径会重下）
+     * @param resume true=续传（保留临时文件，用 Range 从断点接着写）
      */
     fun download(
         ctx: Context,
@@ -36,14 +45,13 @@ object Fetch {
         onProgress: (Long, Long, Long) -> Unit,
         cancelHolder: AtomicReference<(() -> Unit)?>,
         resume: Boolean = false,
-        totalHint: Long = -1L
+        totalHint: Long = -1L,
+        jobKey: Long = 0L
     ): Saved {
-        val tree = Store.treeUri(ctx)
-        // 仅「应用目录」路径支持断点续传；SAF 共享文件夹不支持追加写入，续传时直接重下
-        val fileDir = File(ctx.getExternalFilesDir(null), "Download")
-        if (!fileDir.exists()) fileDir.mkdirs()
-        val targetFile = File(fileDir, name)
-        val canResume = resume && tree == null && targetFile.exists()
+        val tmpDir = File(ctx.cacheDir, "dltmp")
+        if (!tmpDir.exists()) tmpDir.mkdirs()
+        val targetFile = File(tmpDir, tmpName(jobKey, name))
+        val canResume = resume && targetFile.exists() && targetFile.length() > 0L
         val resumeFrom = if (canResume) targetFile.length() else 0L
 
         val reqBuilder = Request.Builder()
@@ -55,6 +63,9 @@ object Fetch {
         cancelHolder.set { stopped.set(true) }
 
         val req = reqBuilder.build()
+        var sum = resumeFrom
+        var total = -1L
+        var speed = 0L
         Net.http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
             val body = resp.body ?: throw RuntimeException("响应为空")
@@ -63,44 +74,36 @@ object Fetch {
             val directTotal = if (resp.code == 206) resumeFrom + body.contentLength().coerceAtLeast(0)
                              else body.contentLength()
             // 直接拿不到总大小时，用下载前 HEAD 探到的真实大小兜底（chunked 传输常拿不到）
-            val total = if (directTotal > 0) directTotal else totalHint
+            total = if (directTotal > 0) directTotal else totalHint
 
-            var out: OutputStream? = null
-            var where = ""
+            // 一律先写私有临时文件；最终落盘位置由 commit() 决定（SAF 或应用目录）。
+            // 服务器没接受 Range（没回 206）：丢掉半截文件从头写，否则新旧字节拼起来是坏文件
+            if (resumeFrom > 0L && !append) targetFile.delete()
+            val out: OutputStream = if (append) FileOutputStream(targetFile, true)
+                                    else targetFile.outputStream()
 
-            if (tree != null) {
-                val dir = Store.subDir(ctx, "GitHub下载器")
-                val fileUri = if (dir != null) Store.newFile(ctx, dir, name) else null
-                if (fileUri != null) {
-                    out = ctx.contentResolver.openOutputStream(fileUri)
-                    where = "共享文件夹：${Store.displayName(ctx)}/GitHub下载器/$name"
-                }
-            }
-            if (out == null) {
-                if (append) {
-                    out = FileOutputStream(targetFile, true)
-                } else {
-                    if (resumeFrom > 0) targetFile.delete() // 服务器不支持断点，重下
-                    out = targetFile.outputStream()
-                }
-                where = "应用目录：${targetFile.absolutePath}"
-            }
-
-            var sum = resumeFrom
             var lastT = System.currentTimeMillis()
             var lastB = resumeFrom
-            var speed = 0L
-            val md = MessageDigest.getInstance("SHA-256")
 
             out.use { o ->
                 body.byteStream().use { ins ->
                     val buf = ByteArray(64 * 1024)
+                    var zeros = 0
                     while (true) {
                         if (stopped.get()) break
                         val n = ins.read(buf)
-                        if (n <= 0) break
+                        // 只把 -1 当 EOF：InputStream 的合同允许 read 返回 0
+                        // （非阻塞源、或某些包装流），按 <=0 退出会**静悄悄少下一截**，
+                        // 而总大小未知时（codeload chunked）连「下载不完整」那道兜底都不会触发
+                        if (n < 0) break
+                        // 0 次读数要有出口上限，否则「某个包装流每次都返回 0」会变成
+                        // 一个既不报错也不结束的忙循环（表现是下载永远 0%，还吃满一个核）
+                        if (n == 0) {
+                            if (++zeros > 1000) throw RuntimeException("读取无进展，已中止")
+                            continue
+                        }
+                        zeros = 0
                         o.write(buf, 0, n)
-                        md.update(buf, 0, n)
                         sum += n
                         val now = System.currentTimeMillis()
                         if (now - lastT >= 500) {
@@ -113,13 +116,37 @@ object Fetch {
                 }
                 o.flush()
             }
-            // 用户主动暂停：保留已写部分（应用目录路径可被下次 Range 续传），不抛成失败
+            // 用户主动暂停：保留临时文件，下次用 Range 从断点接着写
             if (stopped.get()) throw PausedException()
-            onProgress(sum, total, speed)
-            val sha = md.digest().joinToString("") { "%02x".format(it) }
-            return Saved(where, sum, sha)
+        }
+        // 总大小已知却没收满：连接被中途掐断而没抛异常，这时落盘就是坏文件，
+        // 且它的 SHA256 会「校验不通过」误导用户以为被篡改。宁可报错重下。
+        if (total > 0L && sum < total) throw RuntimeException("下载不完整（${sum}/${total} 字节），请重试")
+        onProgress(sum, total, speed)
+        // 校验值一律由 commit 对完整文件重算：续传时流式哈希只覆盖本次新增的字节。
+        return commit(ctx, targetFile, name)
+    }
+
+    /**
+     * 任务被删除时清掉它的断点临时文件（三个引擎的目录都扫一遍）。
+     * 不清的话：用户删掉一个下了 80% 的任务，那半截大文件会一直躺在 cacheDir，
+     * 除非系统「清理存储」，否则越积越多——而这些任务已经不可能再续传了。
+     */
+    fun dropTemp(ctx: Context, jobKey: Long, name: String) {
+        val n = tmpName(jobKey, name)
+        for (d in listOf("dltmp", "oktmp", "ariatmp")) {
+            java.io.File(File(ctx.cacheDir, d), n).delete()
+            java.io.File(File(ctx.cacheDir, d), "$n.aria2").delete()
         }
     }
+
+    /**
+     * 临时文件名带任务 id 前缀：并发下载的多个任务可能同名（例如同一仓库两个
+     * Release 都叫 app.apk），共用一个临时文件会互相踩字节，续传时更会把两条
+     * 任务的断点混成一个坏文件。最终落盘仍用干净的 [name]。
+     */
+    fun tmpName(jobKey: Long, name: String): String =
+        if (jobKey > 0L) "$jobKey-$name" else name
 
     /** 文件名清洗，避免路径穿越 */
     fun safeName(name: String): String =
@@ -130,9 +157,20 @@ object Fetch {
         val md = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { ins ->
             val buf = ByteArray(64 * 1024)
+            var zeros = 0
             while (true) {
                 val n = ins.read(buf)
-                if (n <= 0) break
+                // 同 download：0 不是 EOF。这里出错最坏是**给出一个错的校验值**，
+                // 用户会以为文件被篡改，比报错难解释得多
+                if (n < 0) break
+                // 同 download 的出口上限，别让忙循环卡在这里
+                // 这里不能「跳出循环算个残缺哈希」——那等于凭空给出一个错的校验值，
+                // 用户会以为下载的文件被篡改。宁可抛异常说算不出来。
+                if (n == 0) {
+                    if (++zeros > 1000) throw java.io.IOException("读取无进展，SHA256 计算中止")
+                    continue
+                }
+                zeros = 0
                 md.update(buf, 0, n)
             }
         }
@@ -167,33 +205,40 @@ object Fetch {
     }
 
     /**
-     * 把第三方引擎（OkDownload / Aria2）下到私有缓存的临时文件，搬到最终落盘位置：
-     * 优先写进用户授权的共享文件夹（SAF），否则写 App 私有 Download 目录。
-     * 复用与 [download] 同一套落盘逻辑，返回落盘位置与字节数、校验值。
+     * 把下载到私有缓存的临时文件搬到最终落盘位置，并对完整文件算 SHA256：
+     * 已授权共享文件夹 → 写进 GitHub下载器/；否则写 App 私有 Download 目录。
+     * 三个引擎共用这一段，落盘位置与校验值语义完全一致。
+     *
+     * 授权失效时直接报错，绝不悄悄改写到私有目录——用户按界面提示去共享文件夹
+     * 找文件却找不到，比一次明确的失败更难排查。
      */
     fun commit(ctx: Context, src: java.io.File, name: String): Saved {
         val sha = sha256(src)
+        val bytes = src.length()
         val tree = Store.treeUri(ctx)
-        var where = ""
-        var written = false
         if (tree != null) {
             val dir = Store.subDir(ctx, "GitHub下载器")
-            val fileUri = if (dir != null) Store.newFile(ctx, dir, name) else null
-            if (fileUri != null) {
-                ctx.contentResolver.openOutputStream(fileUri)?.use { os ->
-                    src.inputStream().use { it.copyTo(os, 64 * 1024) }
-                }
-                where = "共享文件夹：${Store.displayName(ctx)}/GitHub下载器/$name"
-                written = true
+            val fileUri = dir?.let { Store.newFile(ctx, it, name) }
+            if (fileUri == null) {
+                throw RuntimeException(
+                    "无法在共享文件夹「${Store.displayName(ctx)}/GitHub下载器」创建 $name，" +
+                        "请到 设置 → 下载 重新选择文件夹"
+                )
             }
+            val os = ctx.contentResolver.openOutputStream(fileUri)
+                ?: throw RuntimeException(
+                    "共享文件夹不可写：${Store.displayName(ctx)}/GitHub下载器/$name，" +
+                        "请到 设置 → 下载 重新授权"
+                )
+            os.use { out -> src.inputStream().use { ins -> ins.copyTo(out, 64 * 1024) } }
+            src.delete()
+            return Saved("共享文件夹：${Store.displayName(ctx)}/GitHub下载器/$name", bytes, sha)
         }
-        if (!written) {
-            val d = java.io.File(ctx.getExternalFilesDir(null), "Download")
-            if (!d.exists()) d.mkdirs()
-            val f = java.io.File(d, name)
-            src.inputStream().use { it.copyTo(f.outputStream(), 64 * 1024) }
-            where = "应用目录：${f.absolutePath}"
-        }
-        return Saved(where, src.length(), sha)
+        val d = java.io.File(ctx.getExternalFilesDir(null), "Download")
+        if (!d.exists()) d.mkdirs()
+        val f = java.io.File(d, name)
+        f.outputStream().use { out -> src.inputStream().use { ins -> ins.copyTo(out, 64 * 1024) } }
+        src.delete()
+        return Saved("应用目录：${f.absolutePath}", bytes, sha)
     }
 }

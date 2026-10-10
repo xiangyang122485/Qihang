@@ -77,9 +77,9 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                     })
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "克隆公开源码仓库时的行为，仅作用于 SSH 克隆，不影响 Release / raw 下载。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                CollapsibleNote(
+                    "这一档管什么（点击展开）",
+                    "克隆公开源码仓库时的行为，仅作用于克隆，不影响 Release / raw 下载。"
                 )
                 if (!vmSettings.cloneOn) {
                     Spacer(Modifier.height(6.dp))

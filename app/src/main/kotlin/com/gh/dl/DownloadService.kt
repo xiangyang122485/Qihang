@@ -100,10 +100,25 @@ class DownloadService : Service() {
         nm.createNotificationChannel(ch)
     }
 
+    /**
+     * 点通知回到 App。前台服务通知原本不可点，用户从通知栏看不到「下载完了去哪了」；
+     * 下载的是 APK 时，完成通知更是唯一的入口提示。
+     * FLAG_IMMUTABLE：targetSdk 31+ 必须显式声明可变性，否则 PendingIntent 直接抛异常。
+     */
+    private fun contentIntent(): PendingIntent {
+        val i = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        return PendingIntent.getActivity(
+            this, 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun buildNotification(): Notification {
         val name = AppState.dlNotiName.ifBlank { "下载中" }
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentIntent(contentIntent())
             .setContentTitle("正在下载 $name")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -131,6 +146,7 @@ class DownloadService : Service() {
                 val name = AppState.dlNotiName.ifBlank { "文件" }
                 val done = NotificationCompat.Builder(this, CHANNEL)
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentIntent(contentIntent())
                     .setContentTitle(if (AppState.dlNotiOk) "下载完成 $name" else "下载失败 $name")
                     .setContentText(if (AppState.dlNotiOk) "已保存到下载位置" else "可重试或检查网络")
                     .setOngoing(false)
