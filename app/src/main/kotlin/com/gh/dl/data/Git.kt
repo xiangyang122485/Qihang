@@ -5,6 +5,7 @@ import com.gh.dl.ui.AppState
 import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.KeyPair
+import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.ProgressMonitor
@@ -13,6 +14,7 @@ import org.eclipse.jgit.transport.RemoteSession
 import org.eclipse.jgit.transport.SshSessionFactory
 import org.eclipse.jgit.transport.URIish
 import org.eclipse.jgit.util.FS
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -25,12 +27,12 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * 手机端独立的 git 克隆。
  *
- * 原理：GitHub 的 HTTPS（443）在这个网络里会被重置，但 SSH（22）是通的。
- * 所以这里用纯 Java 的 SSH 客户端（jsch）直连 GitHub 的真实 IP，
- * 再交给纯 Java 的 git 实现（JGit）走 git-upload-pack 协议取仓库。
+ * 原理：GitHub 的 HTTPS（443）在此网络中会被重置，但 SSH（22）可正常连接。
+ * 因此使用纯 Java 的 SSH 客户端（jsch）直连 GitHub 的真实 IP，
+ * 再交由纯 Java 的 git 实现（JGit）通过 git-upload-pack 协议获取仓库。
  *
- * 全程只连 GitHub 官方服务器（github.com 的真实 IP），
- * 不经过任何第三方中转，不建隧道，不碰任何代理翻墙能力。
+ * 全程仅连接 GitHub 官方服务器（github.com 的真实 IP），
+ * 不经任何第三方中转，不建立隧道，不涉及代理工具的网络穿透能力。
  */
 object Git {
 
@@ -42,7 +44,7 @@ object Git {
         "20.205.243.166"
     )
 
-    /** 多久没有任何新数据就判定传输停滞（毫秒） */
+    /** 多久未收到任何新数据即判定传输停滞（毫秒） */
     private const val STALL_MS = 90000L
 
     data class KeyInfo(val pub: String, val fingerprint: String)
@@ -65,20 +67,27 @@ object Git {
     fun hasKey(ctx: Context): Boolean = SshKeys.list(ctx).isNotEmpty()
 
     /**
-     * 当前激活钥匙的私钥/公钥字节（解密自加密库，仅本进程内）。
-     * 用于 JGit 的 DirectFactory：直接把字节喂给 JSch，不落明文文件。
+     * 当前激活密钥的私钥/公钥字节（解密自加密库，仅限本进程内）。
+     * 用于 JGit 的 DirectFactory：直接将字节提供给 JSch，不落盘明文文件。
      */
-    fun activeKeyBytes(ctx: Context): Pair<ByteArray, ByteArray>? {
+    fun activeKeyBytes(ctx: Context): KeyBundle? {
         val e = SshKeys.active(ctx) ?: return null
-        return SshKeys.decryptPriv(ctx, e) to e.pub.toByteArray(Charsets.UTF_8)
+        return KeyBundle(
+            prv = SshKeys.decryptPriv(ctx, e),
+            pub = e.pub.toByteArray(Charsets.UTF_8),
+            pass = SshKeys.decryptPass(ctx, e)
+        )
     }
 
+    /** SSH 认证所需材料：私钥、公钥行、可选口令（无口令时为 null） */
+    data class KeyBundle(val prv: ByteArray, val pub: ByteArray, val pass: ByteArray?)
+
     /**
-     * 把当前激活钥匙解密后写到 App 私有临时文件（libgit2 需要文件路径）。
-     * 文件在 filesDir/ssh 下，权限仅属主可读，外部 App 不可读。
+     * 将当前激活密钥解密后写入 App 私有临时文件（libgit2 需要文件路径）。
+     * 文件位于 filesDir/ssh 下，权限仅限属主读取，外部 App 不可读。
      *
-     * 注意：这是明文私钥，用完必须立刻 [wipeActiveKeyFile]。写它只是因为 libgit2
-     * 的回调只接受路径，JGit 那条路（[activeKeyBytes]）是直接喂字节的。
+     * 说明：此为明文私钥，用完后必须立即调用 [wipeActiveKeyFile]。写入文件仅因 libgit2
+     * 的回调仅接受路径，而 JGit 路径（[activeKeyBytes]）为直接提供字节。
      */
     fun activeKeyFile(ctx: Context): File? {
         val e = SshKeys.active(ctx) ?: return null
@@ -93,7 +102,7 @@ object Git {
     }
 
     /**
-     * 删除 libgit2 用过的明文私钥临时文件（先覆零再删，避免删掉后仍能从磁盘残留恢复）。
+     * 删除 libgit2 使用后的明文私钥临时文件（先覆零再删除，避免删除后仍可从磁盘残留恢复）。
      */
     fun wipeActiveKeyFile(ctx: Context) {
         val f = File(dir(ctx), "active_id_rsa")
@@ -101,14 +110,16 @@ object Git {
         try {
             val raf = java.io.RandomAccessFile(f, "rw")
             raf.use { it.seek(0); it.write(ByteArray(it.length().toInt())); it.setLength(0) }
-        } catch (_: Exception) { /* 覆零失败也要继续删 */ }
+        } catch (_: Exception) { /* 覆零失败仍需继续删除 */ }
         f.delete()
     }
 
-    /** 算 GitHub 页面上那种 SHA256:xxxx 指纹，方便加完核对 */
+    private val WS_SPLIT = Regex("\\s+")
+
+    /** 计算 GitHub 页面上的 SHA256:xxxx 指纹，便于添加后核对 */
     fun sha256Fp(pubLine: String): String {
         return try {
-            val parts = pubLine.trim().split(Regex("\\s+"))
+            val parts = pubLine.trim().split(WS_SPLIT)
             val blob = android.util.Base64.decode(parts[1], android.util.Base64.DEFAULT)
             val d = java.security.MessageDigest.getInstance("SHA-256").digest(blob)
             "SHA256:" + android.util.Base64.encodeToString(d, android.util.Base64.NO_WRAP).trimEnd('=')
@@ -117,7 +128,7 @@ object Git {
         }
     }
 
-    /** 测每个 IP 的 22 端口，返回最快的那个 */
+    /** 测试每个 IP 的 22 端口，返回延迟最低者 */
     fun pickIp(): Pair<String, Long>? {
         var bestIp = ""
         var bestMs = Long.MAX_VALUE
@@ -144,7 +155,7 @@ object Git {
         return if (bestIp.isBlank()) null else bestIp to bestMs
     }
 
-    /** 把 jsch 的 exec 通道包装成 JGit 需要的 Process */
+    /** 将 jsch 的 exec 通道包装为 JGit 所需的 Process */
     private class ExecProcess(private val ch: ChannelExec) : Process() {
         override fun getOutputStream(): OutputStream = ch.outputStream
         override fun getInputStream(): InputStream = ch.inputStream
@@ -176,13 +187,14 @@ object Git {
     }
 
     /**
-     * 直连指定 IP 的 SSH 工厂（不查 DNS，所以污染对它无效）。
-     * 保留 session 引用是为了能在传输停滞时主动掐断，避免 JGit 永远挂在那。
+     * 直连指定 IP 的 SSH 工厂（不查询 DNS，因此污染对其无效）。
+     * 保留 session 引用是为了在传输停滞时能够主动断开，避免 JGit 无限挂起。
      */
     private class DirectFactory(
         private val ip: String,
         private val prv: ByteArray,
-        private val pub: ByteArray
+        private val pub: ByteArray,
+        private val pass: ByteArray?
     ) : SshSessionFactory() {
 
         private val sessionRef = AtomicReference<Session?>(null)
@@ -194,21 +206,37 @@ object Git {
             tms: Int
         ): RemoteSession {
             val jsch = JSch()
-            // 直接把解密后的私钥字节喂给 JSch，不在磁盘留明文文件
-            jsch.addIdentity("gh-dl", prv, pub, null)
+            // 私钥字节直接提供给 JSch，不在磁盘保留明文文件
+            jsch.addIdentity("gh-dl", prv, pub, pass)
+            // 内置 GitHub 官方主机公钥并强制校验：连接目标取自可被污染的解析结果，
+            // 不校验即可能被指向非 GitHub 主机
+            jsch.setKnownHosts(
+                ByteArrayInputStream(GhHostKeys.KNOWN_HOSTS.toByteArray(Charsets.UTF_8))
+            )
             val s = jsch.getSession("git", ip, 22)
-            // 这里关掉主机密钥校验是有意的：连接目标是 IPS 里写死的 GitHub 官方 IP，
-            // 不是任意主机，也不存在可预置的 known_hosts（首次连接必然无记录，严格校验
-            // 只会让所有用户都克隆失败）。风险由上游 [Net.doh] 的 DoH 解析兜住——
-            // 若 DoH 被污染给出假 IP，这里会连到非 GitHub 的机器；那种情况下
-            // 服务器只会拒绝我们的公钥，拿不到仓库内容，也不会泄露私钥。
-            // 要真正消除这一格风险，需内置 GitHub 官方指纹并用 setKnownHosts 校验。
-            s.setConfig("StrictHostKeyChecking", "no")
+            s.setConfig("StrictHostKeyChecking", "yes")
             s.setConfig("PreferredAuthentications", "publickey")
             s.setHostKeyAlias("github.com")
             val ms = if (tms <= 0) 30000 else tms * 1000
             s.timeout = ms
-            s.connect(ms)
+            try {
+                s.connect(ms)
+            } catch (e: JSchException) {
+                val m = e.message ?: ""
+                val rejected = m.contains("HostKey", true) ||
+                    m.contains("host key", true) ||
+                    m.contains("fingerprint", true)
+                try { s.disconnect() } catch (_: Exception) { /* 连接未建立或已断开 */ }
+                if (rejected) {
+                    val err = JSchException(
+                        "主机密钥校验未通过：" + ip + " 呈现的主机密钥与内置 GitHub 官方公钥不一致。" +
+                            "若 GitHub 已轮换主机密钥请升级应用，否则该 IP 可能已被污染替换。"
+                    )
+                    err.initCause(e)
+                    throw err
+                }
+                throw e
+            }
             sessionRef.set(s)
             return SshRemote(s)
         }
@@ -221,9 +249,9 @@ object Git {
 
     /** 克隆目录：/sdcard/Android/data/com.gh.dl/files/git/{owner}-{repo} */
     fun targetDir(ctx: Context, slug: String): File =
-        File(ctx.getExternalFilesDir(null), "git/" + slug.replace("/", "-"))
+        Dirs.external(ctx, "git/" + slug.replace("/", "-"))
 
-    /** 量一个目录的大小和文件数；目录正在写，异常直接忽略 */
+    /** 测量目录的大小和文件数；目录正在写入时，异常直接忽略 */
     private fun dirSize(f: File): Pair<Long, Int> {
         var size = 0L
         var n = 0
@@ -244,14 +272,14 @@ object Git {
      * 克隆仓库（完整历史）。
      *
      * 进度分两部分：
-     *  - JGit 的 ProgressMonitor 给阶段名和百分比
-     *  - 一个后台线程每 700ms 量一次 .git 目录大小，给真实的已下载字节和速度
+     *  - JGit 的 ProgressMonitor 提供阶段名和百分比
+     *  - 后台线程每 700ms 测量一次 .git 目录大小，提供真实的已下载字节和速度
      *
-     * 另外带一个停滞看门狗：连续 90 秒没有任何新数据就主动掐断 SSH 会话，
-     * 明确报错，而不是让界面永远停在「传输中」。
+     * 另外配置停滞看门狗：连续 90 秒未收到任何新数据即主动断开 SSH 会话，
+     * 明确报错，而非让界面永远停留在「传输中」。
      *
-     * 注：JGit 4.5（最后一个不依赖 java.nio.file、能在 Android 上跑的版本）
-     * 不支持浅克隆，所以这里是完整历史。
+     * 说明：JGit 4.5（最后一个不依赖 java.nio.file、可在 Android 上运行的版本）
+     * 不支持浅克隆，因此此处为完整历史。
      */
     fun clone(
         ctx: Context,
@@ -260,19 +288,19 @@ object Git {
         onProgress: (Progress) -> Unit
     ): String {
         // 克隆引擎：libgit2（C 实现，HTTPS，经代理前缀触达 GitHub）或 jgit（SSH 直连 IP）
-        // 克隆选项总开关关闭时，强制回退到最稳的默认方式（JGit SSH 直连）
+        // 克隆选项总开关关闭时，强制回退至最稳定的默认方式（JGit SSH 直连）
         val effEngine = if (AppState.cloneOn) AppState.engine else "jgit"
         if (effEngine == "libgit2") return cloneLibgit2(ctx, slug, onProgress)
         val active = activeKeyBytes(ctx)
-            ?: return "还没有 SSH 钥匙，请先到「设置 → SSH 密钥」生成并加到 GitHub"
+            ?: return "尚无 SSH 密钥，请先前往「设置 → 克隆 → SSH 密钥管理」生成并添加至 GitHub"
         val out = targetDir(ctx, slug)
         if (out.exists()) out.deleteRecursively()
         out.parentFile?.mkdirs()
 
-        val factory = DirectFactory(ip, active.first, active.second)
+        val factory = DirectFactory(ip, active.prv, active.pub, active.pass)
         SshSessionFactory.setInstance(factory)
 
-        val stage = AtomicReference("连接 $ip:22 …")
+        val stage = AtomicReference("连接 $ip:22")
         val acc = AtomicInteger(0)
         val totalWork = AtomicInteger(0)
         val stopped = AtomicBoolean(false)
@@ -280,7 +308,7 @@ object Git {
         val t0 = System.currentTimeMillis()
         val sub = File(out, ".git")
 
-        val watcher = Thread {
+        val watcher = Threads.new("克隆看门狗") {
             var lastB = 0L
             var lastT = t0
             var lastGrow = t0
@@ -301,7 +329,7 @@ object Git {
                 // 已经收到数据了、却长时间一动不动 → 判定停滞并掐断
                 if (bytes > 0L && now - lastGrow > STALL_MS) {
                     stalled.set(true)
-                    stage.set("传输停滞，正在断开…")
+                    stage.set("传输停滞，正在断开")
                     factory.abort()
                     break
                 }
@@ -312,7 +340,6 @@ object Git {
                 }
             }
         }
-        watcher.isDaemon = true
         watcher.start()
 
         val mon = object : ProgressMonitor {
@@ -347,7 +374,7 @@ object Git {
             }
             git.close()
 
-            // Git LFS：JGit 只拿到指针文件，这里拉真实大文件替换掉
+            // Git LFS：JGit 仅获取指针文件，此处拉取真实大文件进行替换
             var lfsMsg = ""
             if (AppState.lfsOn && AppState.cloneOn) {
                 val r = Lfs.resolve(slug, out) { s, _, _ ->
@@ -359,12 +386,12 @@ object Git {
             val (size, files) = dirSize(out)
             onProgress(Progress("克隆完成", size, files, 1f, 0))
 
-            // 用户授权了共享文件夹就复制过去
+            // 用户已授权共享文件夹时进行复制
             var where = "应用私有目录：\n${out.absolutePath}"
             if (Store.isSet(ctx)) {
                 val dest = Store.subDir(ctx, out.name)
                 if (dest != null) {
-                    onProgress(Progress("正在复制到共享文件夹…", size, files, 1f, 0))
+                    onProgress(Progress("正在复制到共享文件夹", size, files, 1f, 0))
                     Store.copyDir(ctx, out, dest) { p ->
                         onProgress(Progress(p, size, files, 1f, 0))
                     }
@@ -379,13 +406,11 @@ object Git {
             if (out.exists()) out.deleteRecursively()
             val secs = (System.currentTimeMillis() - t0) / 1000
             if (stalled.get()) {
-                "传输停滞（网络中断）：${secs}s 内没有再收到数据，已主动断开。\n" +
-                    "这是网络到 GitHub 22 端口的连接被中途掐了。\n" +
-                    // 本 App 没有「浅克隆 / 只取最新一次提交」这个开关（JGit 走完整历史），
-                    // 原来那句「勾选…」指向一个不存在的选项，用户会照着找半天。给可执行的建议。
-                    "建议：① 只是想拿代码的话，改用解析器页的「源码包（zip）」下载，比克隆小得多；② 换 Wi-Fi / 换个时段再试；③ 仓库很大时先关掉 LFS。"
+                "传输停滞：${secs}s 内未收到数据，已主动断开（到 GitHub 22 端口的连接被中途切断）。\n" +
+                    // 克隆始终取完整历史，界面不存在浅克隆选项，建议项必须是可执行的
+                    "可执行操作：① 仅需源码时改用解析器页「源码包（zip）」下载；② 更换网络后重试；③ 关闭 LFS 拉取。"
             } else {
-                "克隆失败（用了 ${secs}s）：${e.message ?: e.javaClass.simpleName}"
+                "克隆失败（耗时 ${secs}s）：${e.message ?: e.javaClass.simpleName}"
             }
         } finally {
             stopped.set(true)
@@ -394,9 +419,9 @@ object Git {
     }
 
     /**
-     * 用内置的 libgit2（C 实现）克隆源码。
-     * 走 HTTPS（smart-HTTP），URL 由 Git2 套加速代理前缀——这样在手机上才能经公益镜像
-     * 触达 GitHub（设备直连 github.com 的 443 被重置）。公开仓库匿名克隆，绝不带 Token。
+     * 使用内置的 libgit2（C 实现）克隆源码。
+     * 走 HTTPS（smart-HTTP），URL 由 Git2 套用加速代理前缀，如此在手机上才能经公益镜像
+     * 触达 GitHub（设备直连 github.com 的 443 被重置）。公开仓库匿名克隆，不携带 Token。
      */
     private fun cloneLibgit2(
         ctx: Context,
@@ -408,27 +433,29 @@ object Git {
         out.parentFile?.mkdirs()
 
         val ssh = AppState.sshChannel == "ssh" && hasKey(ctx) && AppState.cloneOn
+        if (ssh && SshKeys.active(ctx)?.hasPass == true)
+            return "libgit2 引擎不支持带口令的私钥，请改用 JGit 引擎或导入无口令私钥"
         val keyFile = if (ssh) activeKeyFile(ctx) else null
         val keyPath = keyFile?.absolutePath ?: ""
-        onProgress(Progress(if (ssh) "libgit2：正在克隆（SSH 22 端口）…" else "libgit2：正在克隆（HTTPS）…", 0, 0, -1f, 0))
+        onProgress(Progress(if (ssh) "libgit2：正在克隆（SSH 22 端口）" else "libgit2：正在克隆（HTTPS）", 0, 0, -1f, 0))
         val r = try {
             Git2.clone(slug, out, keyPath, ssh)
         } finally {
-            // 克隆一结束（成功、失败、抛异常都算）立刻抹掉明文私钥，不让它常驻磁盘
+            // 克隆结束后（无论成功、失败或抛出异常）立即清除明文私钥，避免其常驻磁盘
             if (keyFile != null) wipeActiveKeyFile(ctx)
         }
         if (!r.startsWith("OK:")) {
             if (out.exists()) out.deleteRecursively()
             val tip = when {
-                ssh -> "\n提示：SSH 通道走 22 端口直连 GitHub 官方真实 IP，需先确认 SSH 公私钥已生成且公钥已加到 GitHub。"
-                !AppState.accelOn -> "\n提示：libgit2 走 HTTPS，手机上需开启「加速代理」才能经镜像触达 GitHub（直连 443 被重置）。"
+                ssh -> "\nSSH 通道经 22 端口直连 GitHub 官方 IP，需已生成密钥并将公钥添加至 GitHub。"
+                !AppState.accelOn -> "\nlibgit2 走 HTTPS，需开启下载加速前缀（443 在部分网络被重置）。"
                 else -> ""
             }
             return "libgit2 克隆失败：$r$tip"
         }
         val head = r.removePrefix("OK:")
 
-        // Git LFS：libgit2 同样只拿到指针，拉真实大文件替换
+        // Git LFS：libgit2 同样仅获取指针，拉取真实大文件进行替换
         var lfsMsg = ""
         if (AppState.lfsOn && AppState.cloneOn) {
             val lr = Lfs.resolve(slug, out) { s, _, _ -> onProgress(Progress(s, 0, 0, -1f, 0)) }
@@ -442,7 +469,7 @@ object Git {
         if (Store.isSet(ctx)) {
             val dest = Store.subDir(ctx, out.name)
             if (dest != null) {
-                onProgress(Progress("正在复制到共享文件夹…", size, files, 1f, 0))
+                onProgress(Progress("正在复制到共享文件夹", size, files, 1f, 0))
                 Store.copyDir(ctx, out, dest) { p -> onProgress(Progress(p, size, files, 1f, 0)) }
                 where = "共享文件夹：${Store.displayName(ctx)}/${out.name}"
             }

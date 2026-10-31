@@ -8,13 +8,13 @@ import java.net.URLEncoder
  * 项目搜索数据层。
  *
  * 三种源：
- *  - github   ：GitHub 官方搜索 API（可经加速代理前缀触达）。这是「国内源」模式复用的索引。
- *  - foreign  ：合法外国代码托管（GitLab.com / Codeberg），各自带公开搜索 API，无鉴权。
- *  - domestic ：复用 GitHub 索引（国内高校镜像站没有「按关键词搜仓库」的 API），
- *              每条结果标 domestic=true，点下载时由解析器自动走镜像站拿 Release。
+ *  - github   ：GitHub 官方搜索 API（可经加速代理前缀触达）。此为「国内源」模式复用的索引。
+ *  - foreign  ：合法境外代码托管（GitLab.com / Codeberg），各自提供公开搜索 API，无鉴权。
+ *  - domestic ：复用 GitHub 索引（国内高校镜像站无「按关键词搜索仓库」的 API），
+ *              每条结果标记 domestic=true，点击下载时由解析器自动走镜像站获取 Release。
  *
- * 合规说明：只搜公开仓库信息（名称/描述/star），不传任何 Token 给第三方；
- * 加速代理前缀仅套在 GitHub 官方域名上。
+ * 合规说明：仅搜索公开仓库信息（名称/描述/star），不向第三方传递任何 Token；
+ * 加速代理前缀仅套用于 GitHub 官方域名。
  */
 object Search {
 
@@ -33,19 +33,19 @@ object Search {
         /** 国内源模式下为 true（表示可走国内镜像下载 Release） */
         val domestic: Boolean = false,
         /** 选中的优先镜像站中文短名（如「南大」）；非空时结果卡上标注「可走 XX 镜像下载」。
-         *  仅用于 GitHub 官方源结果（镜像站只代理 GitHub Release，不代理搜索）。 */
+         *  仅用于 GitHub 官方源结果（镜像站仅代理 GitHub Release，不代理搜索）。 */
         val mirrorLabel: String? = null
     )
 
     /** GitHub 仓库搜索。
-     *  走 https://api.github.com；开启加速（闪电按钮）时 [com.gh.dl.data.Accel] 拦截器
-     *  会直接把请求套上镜像前缀再发（凡是 GitHub 官方域名都走前缀，与 accelOn 开关联动），
+     *  请求 https://api.github.com；开启加速（闪电按钮）时 [com.gh.dl.data.Accel] 拦截器
+     *  会直接将请求套用镜像前缀后发送（所有 GitHub 官方域名均走前缀，与 accelOn 开关联动），
      *  关闭加速则走 [com.gh.dl.data.Net] 自带的 DoH + IP 优选直连。
-     *  这里不手动拼前缀，统一交给拦截器，避免重复改写。
+     *  此处不手动拼接前缀，统一交由拦截器处理，避免重复改写。
      *
      *  兼容性修复：GitHub 的 /search/repositories 返回的是对象 { total_count, items:[...] }，
-     *  不是裸数组；之前直接 JSONArray(...) 会把整个对象当数组解析而抛 JSONException（UI 表现为
-     *  「搜索失败：Value」）。这里统一走 [parseGitHubJson] 取 items 数组，并对每个字段做空安全取值。 */
+     *  而非裸数组；此前直接 JSONArray(...) 会将整个对象作为数组解析而抛出 JSONException（UI 表现为
+     *  「搜索失败：Value」）。此处统一通过 [parseGitHubJson] 获取 items 数组，并对每个字段做空安全取值。 */
     fun github(q: String): List<Hit> {
         val base = "https://api.github.com"
         val url = "$base/search/repositories?q=${enc(q)}&per_page=30&sort=stars"
@@ -53,9 +53,9 @@ object Search {
     }
 
     /**
-     * 把 GitHub 搜索 API 的响应体解析成 [Hit] 列表（纯函数，不发网络，便于单测）。
-     *  - 顶层是对象，仓库列表在 `items` 数组里；
-     *  - 所有字段用 opt* 取值，缺失/为 null 都回退到空串或 0，绝不对 null 强行 getString 而崩。
+     * 将 GitHub 搜索 API 的响应体解析为 [Hit] 列表（纯函数，不发网络，便于单测）。
+     *  - 顶层为对象，仓库列表位于 `items` 数组中；
+     *  - 所有字段使用 opt* 取值，缺失或为 null 时回退至空串或 0，不对 null 强行 getString 以避免崩溃。
      */
     fun parseGitHubJson(body: String): List<Hit> {
         val obj = runCatching { JSONObject(body) }.getOrElse { return emptyList() }
@@ -80,7 +80,7 @@ object Search {
         return out
     }
 
-    /** GitLab.com 公开仓库搜索（合法外国源，自带公开 API） */
+    /** GitLab.com 公开仓库搜索（合法境外源，自带公开 API） */
     fun gitlab(q: String): List<Hit> {
         val url = "https://gitlab.com/api/v4/projects?search=${enc(q)}" +
             "&order_by=stars&sort=desc&per_page=30&visibility=public&membership=false"
@@ -105,7 +105,7 @@ object Search {
         return out
     }
 
-    /** Codeberg（Gitea，合法外国源）仓库搜索 */
+    /** Codeberg（Gitea，合法境外源）仓库搜索 */
     fun codeberg(q: String): List<Hit> {
         val url = "https://codeberg.org/api/v1/repos/search?q=${enc(q)}&limit=30&sort=stars&order=desc"
         val obj = JSONObject(Net.text(url))
@@ -156,8 +156,8 @@ object Search {
     }
 
     /**
-     * GitCode（gitcode.com，CSDN 旗下，底层是 GitLab）。
-     * 该 API 需要访问令牌；[token] 由设置页填入、只发往 gitcode.com 本身。
+     * GitCode（gitcode.com，CSDN 旗下，底层为 GitLab）。
+     * 该 API 需要访问令牌；[token] 由设置页填入、仅发往 gitcode.com 本身。
      */
     fun gitcode(q: String, token: String = com.gh.dl.ui.AppState.gitcodeToken): List<Hit> {
         val url = "https://gitcode.com/api/v4/projects?search=${enc(q)}" +
@@ -185,7 +185,7 @@ object Search {
         return out
     }
 
-    /** 优先镜像站 id → 中文短名（与解析器下拉、诊断页保持一致）。用于结果卡标注「可走 XX 镜像下载」。 */
+    /** 优先镜像站 id 至中文短名的映射（与解析器下拉、诊断页保持一致）。用于结果卡标注「可走 XX 镜像下载」。 */
     private val MIRROR_SHORT = mapOf(
         "tuna" to "清华", "ustc" to "中科大", "nju" to "南大", "huawei" to "华为云",
         "bit" to "北京理工", "sjtu" to "上海交大", "hust" to "华中科技",
@@ -198,6 +198,6 @@ object Search {
     private fun enc(s: String): String =
         try { URLEncoder.encode(s, "UTF-8") } catch (e: Exception) { s }
 
-    /** 取 GitHub Token（仅发给 GitHub 官方域名，符合红线） */
+    /** 获取 GitHub Token（仅发往 GitHub 官方域名，符合安全红线） */
     private fun ghToken(): String = com.gh.dl.ui.AppState.token
 }

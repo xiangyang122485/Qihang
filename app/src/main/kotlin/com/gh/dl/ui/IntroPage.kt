@@ -41,24 +41,24 @@ import androidx.core.content.ContextCompat
 /**
  * 首次启动全屏引导页。
  *
- * 只介绍「这一个 App 能干什么 + 它怎么保护你」，点「开始使用」后才去要通知权限
- * （[Manifest.permission.POST_NOTIFICATIONS]）：拒绝也不阻断任何功能，仅影响下载进度通知。
- * 不在这里强制弹存储授权 / 电池优化 —— 那两件事分别在使用时（选文件夹）和设置页里按需触发。
+ * 介绍本应用的功能与隐私保护措施。点击「开始使用」后请求通知权限
+ * （[Manifest.permission.POST_NOTIFICATIONS]）：拒绝不影响任何功能，仅影响下载进度通知。
+ * 存储授权与电池优化不在此处触发，分别在使用时（选择文件夹）和设置页按需引导。
  */
 @Composable
 fun IntroPage(onDone: () -> Unit) {
     val ctx = LocalContext.current
 
-    // 通知权限：Android 13+ 才需要；低于该版本直接视为已授权，不再弹
+    // 通知权限：Android 13+ 需要；低于该版本视为已授权，不弹出请求
     val notiGranted = if (Build.VERSION.SDK_INT >= 33)
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
     else true
 
-    // 回调里没有需要驱动界面的状态（原本那个 askedNoti 只写不读），所以直接空实现
+    // 回调无需驱动界面状态更新，因此空实现
     val notiLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* 无论授予与否都继续，不阻断 */ }
+    ) { /* 无论授予与否均继续，不阻断后续流程 */ }
 
     Column(
         Modifier.fillMaxSize()
@@ -81,7 +81,7 @@ fun IntroPage(onDone: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "下载 GitHub 公开开源资源 · 全程不翻墙",
+            "下载 GitHub 公开资源 · 默认直连官方端点，不含隧道与代理功能",
             fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
@@ -89,22 +89,24 @@ fun IntroPage(onDone: () -> Unit) {
 
         IntroRow(
             Icons.Filled.Download, "下载 Release 软件",
-            "粘贴链接 → 列出资产 → 多线程拉取，并默认校验 SHA256"
+            "输入链接后列出 Release 资产，支持多线程下载与 SHA256 校验"
         )
         IntroRow(
             Icons.Filled.AccountTree, "整仓克隆 / 源码打包",
-            "GitHub 官方 22 端口直连，或 jsDelivr 公共 CDN 源码"
+            "直连 GitHub 官方 22 端口，或使用 jsDelivr 公共 CDN 获取源码"
         )
         IntroRow(
-            Icons.Filled.FolderOpen, "你掌控存储位置",
-            "用系统文件授权（SAF）挑一个文件夹，App 只那一处可写"
+            Icons.Filled.FolderOpen, "存储位置由用户指定",
+            "通过系统文件授权（SAF）指定文件夹，应用仅对该目录具有写入权限"
         )
         Spacer(Modifier.height(28.dp))
 
         Button(
             onClick = {
-                // 仅在点「开始使用」时尝试要通知权限；拒绝也不阻断
-                if (!notiGranted) notiLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                // 仅在点击「开始使用」时请求通知权限；拒绝不阻断后续流程
+                // 通知权限自 Android 13 起才存在，低版本发出请求必然被拒，故显式判断版本
+                if (!notiGranted && Build.VERSION.SDK_INT >= 33)
+                    notiLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 onDone()
             },
             modifier = Modifier.fillMaxWidth()
@@ -113,7 +115,7 @@ fun IntroPage(onDone: () -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "下载进度通知可选；拒绝也能正常下载，只是收不到通知。",
+            "下载进度通知为可选项，拒绝授权不影响下载。",
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )

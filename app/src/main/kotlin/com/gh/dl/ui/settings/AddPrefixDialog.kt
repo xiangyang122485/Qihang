@@ -1,6 +1,6 @@
 package com.gh.dl.ui.settings
 
-// 阶段1 纯拆分：原 SettingsTab.kt 的「AddPrefixDialog」二级页。逻辑零改动。
+// 自原 SettingsTab.kt 拆分而来的「AddPrefixDialog」二级页。业务逻辑未作改动。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -67,14 +67,13 @@ fun AddPrefixDialog(onClose: () -> Unit) {
     ) { uri ->
         if (uri != null) {
             val text = try {
-                ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText().orEmpty()
+                ctx.contentResolver.openInputStream(uri)?.use { it.reader().readText() }.orEmpty()
             } catch (e: Exception) { "" }
             val found = vmSettings.parsePrefixes(text)
             if (found.isEmpty()) {
-                toast(ctx, "这个文件里没找到 http(s) 前缀")
+                toast(ctx, "该文件中未找到 http(s) 前缀")
             } else {
                 vmSettings.addAccelPrefixes(ctx, found)
-                if (vmSettings.custom.isBlank()) vmSettings.custom = found.first()
                 toast(ctx, "已添加 ${found.size} 个前缀")
                 onClose()
             }
@@ -86,7 +85,7 @@ fun AddPrefixDialog(onClose: () -> Unit) {
         title = { Text("添加加速前缀") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("选择添加方式（前缀需以 http:// 或 https:// 开头）：", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("选择添加方式（https:// 可省略，保存时会自动补全）：", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(onClick = {
                     fileLauncher.launch(arrayOf("text/*", "application/json", "*/*"))
                 }) { Text("本地文件导入（txt / json / md）") }
@@ -95,11 +94,10 @@ fun AddPrefixDialog(onClose: () -> Unit) {
                     val t = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
                     val found = vmSettings.parsePrefixes(t)
                     if (found.isEmpty()) {
-                        toast(ctx, "剪贴板里没有 http(s) 前缀")
+                        toast(ctx, "剪贴板中未找到 http(s) 前缀")
                     } else {
                         vmSettings.addAccelPrefixes(ctx, found)
-                        if (vmSettings.custom.isBlank()) vmSettings.custom = found.first()
-                        toast(ctx, "已添加 ${found.size} 个前缀")
+                                toast(ctx, "已添加 ${found.size} 个前缀")
                         onClose()
                     }
                 }) { Text("从剪贴板导入") }
@@ -117,11 +115,10 @@ fun AddPrefixDialog(onClose: () -> Unit) {
             Button(onClick = {
                 val found = vmSettings.parsePrefixes(manual)
                 if (found.isEmpty()) {
-                    toast(ctx, "请输入以 http:// 或 https:// 开头的前缀")
+                    toast(ctx, "请输入有效的前缀地址")
                     return@Button
                 }
                 vmSettings.addAccelPrefixes(ctx, found)
-                if (vmSettings.custom.isBlank()) vmSettings.custom = found.first()
                 toast(ctx, "已添加 ${found.size} 个前缀")
                 onClose()
             }) { Text("添加") }

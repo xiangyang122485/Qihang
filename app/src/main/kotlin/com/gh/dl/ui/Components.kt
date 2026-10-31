@@ -27,8 +27,8 @@ import androidx.compose.ui.unit.sp
 import com.gh.dl.ui.theme.isDarkTheme
 
 /**
- * 统一卡片：12dp 圆角、surface 表面色、outlineVariant 浅描边、轻微阴影。
- * 全项目所有卡片都用它，避免圆角/间距/描边各写各的。
+ * 统一卡片样式：12dp 圆角、surface 表面色、outlineVariant 浅描边、轻微阴影。
+ * 全项目所有卡片均使用此组件，避免圆角/间距/描边各自定义。
  */
 @Composable
 fun GhCard(
@@ -46,8 +46,8 @@ fun GhCard(
 }
 
 /**
- * 分区小标题：左侧一条强调色竖条 + 加粗标签。
- * 解析页/设置页按来源分组时用，让层级一眼看清。
+ * 分区小标题：左侧强调色竖条 + 加粗标签。
+ * 解析页/设置页按来源分组时使用，便于区分层级。
  * @param accent 强调色，默认 primary；镜像/jsDelivr 通道传 tertiary。
  */
 @Composable
@@ -71,7 +71,7 @@ fun SectionHeader(text: String, accent: Color = MaterialTheme.colorScheme.primar
     }
 }
 
-/** 状态圆点：用语义色表达 成功/警告/失败/中性（如网络结论行） */
+/** 状态圆点：使用语义色表示成功/警告/失败/中性状态（如网络结论行） */
 @Composable
 fun StatusDot(color: Color, modifier: Modifier = Modifier) {
     Box(
@@ -82,7 +82,7 @@ fun StatusDot(color: Color, modifier: Modifier = Modifier) {
     )
 }
 
-/** 图标 + 文字 的紧凑按钮（用于顶栏操作栏） */
+/** 图标 + 文字的紧凑按钮（用于顶栏操作栏） */
 @Composable
 fun RowScope.IconText(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -102,8 +102,8 @@ fun RowScope.IconText(
 
 /**
  * 警告色（琥珀）：浅色 #9A6700 / 深色 #D29922。
- * M3 没有原生 warning 语义，这里作为 ColorScheme 的扩展属性提供，避免在 UI 里写死颜色。
- * 放在 ui 包内，所有 UI 文件同包即可直接用 MaterialTheme.colorScheme.warning。
+ * M3 无原生 warning 语义，此处作为 ColorScheme 的扩展属性提供，避免在 UI 中硬编码颜色值。
+ * 放置于 ui 包内，所有 UI 文件同包即可直接使用 MaterialTheme.colorScheme.warning。
  */
 val ColorScheme.warning: Color
     @Composable
@@ -111,22 +111,22 @@ val ColorScheme.warning: Color
 
 /**
  * 文字链接色：primary 的 0.7 透明度版本。所有「文字链接」（复制 / 打开 / 导航类 TextButton）
- * 统一用它，与实心按钮（primary 实色）区分，保证设置页颜色统一、不混用亮蓝。
+ * 统一使用此颜色，与实心按钮（primary 实色）区分，确保设置页颜色统一、不混用亮蓝。
  */
 val ColorScheme.link: Color
     @Composable
     get() = primary.copy(alpha = 0.7f)
 
 /**
- * 强调红（实心按钮用）：解析器页「解析」按钮专用，与绿色主按钮区分开。
- * 浅色 #C62828 / 深色 #EF5350 —— 深色底上纯红不够亮，提亮一档保证白字可读。
+ * 强调红（实心按钮用）：解析器页「解析」按钮专用，与绿色主按钮区分。
+ * 浅色 #C62828 / 深色 #EF5350——深色背景下纯红亮度不足，提亮一档以保证白色文字可读。
  */
 val ColorScheme.accentRed: Color
     @Composable
     get() = if (isDarkTheme()) Color(0xFFEF5350) else Color(0xFFC62828)
 
 /**
- * 强调蓝（实心按钮用）：「浏览」按钮专用，语义是「打开网页」，
+ * 强调蓝（实心按钮用）：「浏览」按钮专用，语义为「打开网页」，
  * 与绿色（下载类动作）、红色（解析动作）区分。
  * 浅色 #1565C0 / 深色 #64B5F6。
  */

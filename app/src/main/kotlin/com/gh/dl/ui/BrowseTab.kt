@@ -12,6 +12,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,10 +35,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -46,83 +50,109 @@ import com.gh.dl.ui.theme.isDarkTheme
 import java.io.ByteArrayInputStream
 
 /**
- * 「浏览」Tab：**命令行式抓取 + 本地渲染**。
+ * 「浏览」Tab：采用命令行方式抓取页面并在本地渲染。
  *
- * 网络全在 [GhView]（CLI UA 的 OkHttp，见该类注释）里完成，本页面只是把生成的 HTML
- * 交给 WebView 显示，所以这里的 WebView **不开 JS、不联网、不许读本地文件**。
- * 页内链接点击被 [WebViewClient.shouldOverrideUrlLoading] 拦下：github 系地址回到
- * [BrowseViewModel.navigate] 再抓一页，其余地址交系统浏览器（不替用户决定装什么 App）。
+ * 网络请求全部在 [GhView]（使用命令行 UA 的 OkHttp，详见该类注释）中完成，
+ * 本页面仅将生成的 HTML 交给 WebView 显示。WebView 禁用 JS、禁止联网、禁止读取本地文件。
+ * 页内链接点击由 [WebViewClient.shouldOverrideUrlLoading] 拦截：GitHub 域名链接交由
+ * [BrowseViewModel.navigate] 重新抓取页面，其余链接由系统浏览器处理。
  *
- * 生命周期：VM 与 Activity 同生命周期，Tab 切换会销毁本 Composable。页面内容存在
- * [BrowseViewModel.page] 里，所以切回来时 factory 直接把它加载好，不用重新抓取。
+ * 生命周期：VM 与 Activity 同生命周期，Tab 切换会销毁本 Composable。页面内容存储在
+ * [BrowseViewModel.page] 中，切换回来时 factory 直接加载缓存内容，无需重新抓取。
  */
 @Composable
 fun BrowseTab() {
     val ctx = LocalContext.current
     val vm = LocalBrowseVM.current
     val dark = isDarkTheme()
+    // 记录 WebView 当前加载的地址：翻译同一页时保留滚动位置，切换页面时回到顶部
+    val lastLoadedUrl = remember { arrayOfNulls<String>(1) }
 
-    // 页面内可后退时，返回键先退浏览栈；退无可退才交回外层（切回解析器 Tab）
+    // 页面内可后退时，返回键优先退出浏览栈；无历史记录时交回外层（切回解析器 Tab）
     BackHandler(enabled = vm.canGoBack) { vm.goBack() }
 
-    // 加速开关与深浅色都在这里读：拨闪电 / 改外观会触发重组，
-    // syncOptions 比对快照后按新通道、新配色重取本页
-    vm.syncOptions(dark)
+    // 手动翻译失败时提示一次；静默翻译失败不写该字段，页面保持原文
+    val translateErr = vm.translateError
+    LaunchedEffect(translateErr) {
+        if (translateErr != null) {
+            toast(ctx, "翻译失败：$translateErr")
+            vm.consumeTranslateError()
+        }
+    }
+
+    // 选项快照比对属于副作用：syncOptions 内部写入 ViewModel 状态并可能发起抓取，
+    // 直接放在组合过程中会在同一帧内再次触发重组
+    LaunchedEffect(dark, vm.url, vm.page) { vm.syncOptions(dark) }
 
     Column(Modifier.fillMaxSize()) {
         vm.loadError?.let { err ->
-            // 抓不开时给一条能看懂的提示，而不是留个白屏让人猜
+            // 单行状态加一个可执行动作。此前为多子句整段说明，占用顶部两三行，
+            // 且只在下次抓取开始时才清除，页面已恢复正常时仍显示，形成悬在内容上方的文字块
             Row(
                 Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.errorContainer)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .clickable { vm.reload() }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "抓不开：$err。" +
-                        (if (AppState.browseAccelOn)
-                            "已开浏览加速（先试 " + GhView.pageMirrors.joinToString("、") { it.removePrefix("https://") } +
-                                "，再直连 GitHub），可点刷新重试，或在「设置 → 加速 → 浏览加速」换镜像站。"
-                         else "可点顶栏闪电开启浏览加速（改走网页镜像站），或用右上角在外部浏览器打开。"),
+                    "获取失败：$err",
                     fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.weight(1f)
                 )
+                Text(
+                    "点按重试",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
             }
         }
-        // 抓取是一整个阻塞请求（没有中间百分比），所以用不定进度条
-        if (vm.loading) {
+        // 抓取为阻塞请求（无中间进度百分比），因此使用不确定进度条
+        if (vm.loading || vm.translating) {
+            // 翻译在原文显示后进行，进度条与抓取共用同一位置，不新增悬浮文字
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (vm.page == null && !vm.loading) {
-                // 还没成功抓到任何一页（首次就失败）：给个空态，别只显示一条提示条
+                // 尚未成功获取任何页面（首次加载即失败）：显示空态提示，而非仅显示错误条
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("没有内容", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                    Text("暂无内容", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
                 }
             } else {
                 AndroidView(
                     factory = { c ->
                         localWebView(c, vm).apply {
-                            // 切 Tab 回来时 WebView 是新建的，但页面内容还在 VM 里，直接加载它
-                            vm.page?.let { loadPage(it, this) }
+                            // 切换 Tab 返回时 WebView 为新建实例，页面内容仍缓存在 VM 中，直接加载
+                            vm.page?.let { p ->
+                                lastLoadedUrl[0] = p.logicalUrl
+                                loadPage(p, this, 0)
+                            }
                         }
                     },
                     update = { web ->
-                        // 只在「抓到新页面」时加载；同一个地址再点刷新也是新的一次抓取，
-                        // 会走同一信号，普通重组不会重复加载
+                        // 仅在获取到新页面时加载；同一地址再次刷新也会触发新的抓取，
+                        // 通过信号比对实现，普通重组不会重复加载
                         if (vm.loadedToken != vm.loadToken) {
                             vm.loadedToken = vm.loadToken
-                            vm.page?.let { loadPage(it, web) }
+                            vm.page?.let { p ->
+                                // 译文替换同一页面时保留阅读位置；换页 / 首次加载从顶部开始
+                                val keep = lastLoadedUrl[0] == p.logicalUrl
+                                val y = if (keep) web.scrollY else 0
+                                loadPage(p, web, y)
+                                lastLoadedUrl[0] = p.logicalUrl
+                            }
                         }
                     },
                     onRelease = { web ->
-                        // 必须真销毁。WebView 里面挂着一整块原生渲染内核与合成表面，
-                        // GC 回收不到它（历史上有名的泄漏）；而切走 Tab 就会走这里，
-                        // 用户来回切几个 Tab 就能攒出好几个内核。
-                        // 页面内容存在 VM.page 里，切回来由 factory 重新 loadPage，
-                        // 所以销毁实例不丢任何内容。
+                        // 必须显式销毁。WebView 包含原生渲染内核与合成表面，
+                        // GC 无法回收（已知的内存泄漏场景）。切换 Tab 时会触发此回调，
+                        // 多次切换会累积多个内核实例。
+                        // 页面内容缓存在 VM.page 中，切换回来时由 factory 重新 loadPage，
+                        // 因此销毁实例不会丢失任何内容。
                         runCatching {
                             web.stopLoading()
                             (web.parent as? android.view.ViewGroup)?.removeView(web)
@@ -134,19 +164,28 @@ fun BrowseTab() {
             }
         }
     }
+
 }
 
-/** 把抓好的本地页面塞进 WebView：base 用 github.com，页面里已无外部资源，加载不产生请求 */
-private fun loadPage(p: GhView.Page, web: WebView) {
+/**
+ * 将已抓取的本地页面加载到 WebView：base URL 使用 github.com，页面中无外部资源引用，
+ * 加载过程不产生网络请求。[scrollY] > 0 时在布局完成后恢复阅读位置（用于原位翻译后重载）。
+ */
+private fun loadPage(p: GhView.Page, web: WebView, scrollY: Int = 0) {
     web.loadDataWithBaseURL(p.logicalUrl, p.html, "text/html", "utf-8", null)
+    if (scrollY > 0) {
+        web.postDelayed({
+            if (web.isAttachedToWindow) web.scrollTo(0, scrollY)
+        }, 120)
+    }
 }
 
-/** 浏览页顶栏动作：后退 / 前进 / 刷新 / 用外部浏览器打开 */
+/** 浏览页顶栏操作：后退 / 前进 / 刷新 / 在外部浏览器中打开 */
 @Composable
 fun BrowseTopActions() {
     val ctx = LocalContext.current
     val vm = LocalBrowseVM.current
-    // 顶栏横向空间有限（还要放闪电按钮），所以「后退 / 前进」只在真能退、真能进时才出现
+    // 顶栏横向空间有限（需容纳加速按钮），因此「后退 / 前进」仅在可用时显示
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (vm.canGoBack) {
             IconButton(onClick = { vm.goBack() }) {
@@ -165,7 +204,7 @@ fun BrowseTopActions() {
             }
         }
         if (vm.loading) {
-            // 抓取没有百分比，用一个小圈圈表示「正在取」，免得点了刷新看着像没反应
+            // 抓取无百分比进度，使用圆形指示器表示「正在加载」，提供刷新的视觉反馈
             CircularProgressIndicator(
                 modifier = Modifier.width(16.dp).height(16.dp),
                 strokeWidth = 2.dp,
@@ -179,15 +218,8 @@ fun BrowseTopActions() {
         }
         IconButton(
             onClick = {
-                // 登录 GitHub、下载页面附件这类操作，系统浏览器合适得多
-                if (vm.url.isNotBlank()) {
-                    runCatching {
-                        ctx.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(vm.url))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    }
-                }
+                // 登录 GitHub、下载页面附件等操作适合在系统浏览器中完成
+                if (vm.url.isNotBlank()) openUrl(ctx, vm.url, "未找到可打开链接的浏览器")
             },
             enabled = vm.url.isNotBlank()
         ) {
@@ -199,7 +231,7 @@ fun BrowseTopActions() {
     }
 }
 
-/** 浏览 Tab 还没加载任何页面时的提示（此时不创建 WebView，省内存） */
+/** 浏览 Tab 未加载任何页面时的引导提示（此时不创建 WebView，节省内存） */
 @Composable
 fun BrowseEmptyHint() {
     Column(
@@ -207,21 +239,20 @@ fun BrowseEmptyHint() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("还没有浏览内容", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Text("暂无浏览内容", fontSize = 15.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
         Text(
-            "在「解析器」页点蓝色的「浏览」按钮，或在「搜索」结果里点「浏览」，" +
-                "就会在这一页显示对应的仓库页（README、文件列表、Releases、Issues）。",
+            "在「解析器」页或「搜索」结果中点「浏览」，" +
+                "此处显示对应仓库页面（README、文件列表、Releases、Issues）。",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "这一页不联网：内容是用命令行方式（curl 类 UA）抓下来后本地渲染的，" +
-                "所以不需要 JS，也不会加载任何外部脚本或图片。" +
-                "顶栏闪电切的是「浏览加速」（和解析器页那个管下载的闪电各管各的）：" +
-                "开着时先走网页镜像站、失败再直连 GitHub；关着时只直连（走真实 IP 优选）。" +
-                "注意镜像站只放行 git/curl 类 UA，所以这类页面在普通浏览器内核里是打不开的。",
+            "正文由应用抓取后在本地渲染，WebView 不联网、不执行 JS，也不加载外部脚本与图片。" +
+                "顶栏加速按钮控制「浏览加速」，与解析器页的下载加速相互独立：" +
+                "开启时优先使用网页镜像站，失败后直连 GitHub；关闭时仅直连。" +
+                "网页镜像站仅放行 git/curl 类 UA，其页面在普通浏览器内核中不可用。",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.outline
         )
@@ -229,14 +260,14 @@ fun BrowseEmptyHint() {
 }
 
 /**
- * 创建一个「纯本地显示器」WebView：不联网、不跑 JS、不许读本地文件。
+ * 创建纯本地渲染用 WebView：禁止联网、禁用 JS、禁止读取本地文件。
  *
- * 三项关掉的道理：
- *  - JS：抓取阶段的 HTML 已经包含 README 正文与文件列表（服务端渲染），不需要跑脚本。
- *    关掉它，即使净化有漏网之鱼也执行不了，等于第二道 XSS 防线。
- *  - 网络：[shouldInterceptRequest] 一律拦掉子资源；[shouldOverrideUrlLoading] 一律自己处理，
- *    所以这个内核不会发出任何请求。生成的页面里图片都是 data:，也不会有请求。
- *  - file/content 访问：本地页不需要，关掉避免被构造出的地址碰到沙箱外内容。
+ * 三项禁用的原因：
+ *  - JS：抓取阶段的 HTML 已包含 README 正文与文件列表（服务端渲染），无需执行脚本。
+ *    禁用后，即使 HTML 净化存在遗漏也无法执行，作为第二道 XSS 防线。
+ *  - 网络：[shouldInterceptRequest] 拦截全部子资源；[shouldOverrideUrlLoading] 自行处理全部导航，
+ *    因此 WebView 内核不会发出任何网络请求。生成页面中的图片均为 data: URI，不产生额外请求。
+ *  - file/content 访问：本地页无需此功能，禁用后避免构造地址访问沙箱外内容。
  */
 @SuppressLint("SetJavaScriptEnabled")
 private fun localWebView(ctx: Context, vm: BrowseViewModel): WebView = WebView(ctx).apply {
@@ -247,7 +278,7 @@ private fun localWebView(ctx: Context, vm: BrowseViewModel): WebView = WebView(c
         allowContentAccess = false
         javaScriptCanOpenWindowsAutomatically = false
         setSupportMultipleWindows(false)
-        // 本地页每次由我们重新生成，缓存反而会让旧内容留在内存里
+        // 本地页每次重新生成，缓存会导致旧内容残留于内存
         cacheMode = WebSettings.LOAD_NO_CACHE
         loadsImagesAutomatically = true
         useWideViewPort = true
@@ -258,41 +289,37 @@ private fun localWebView(ctx: Context, vm: BrowseViewModel): WebView = WebView(c
 
     webViewClient = object : WebViewClient() {
         /**
-         * 所有导航都在这里消化，绝不让 WebView 自己联网：
-         *  - github 系链接 → 交 [BrowseViewModel.navigate] 用命令行方式重抓一页；
-         *  - 其他 http(s)（外站、Releases 下载链接等）→ 交系统浏览器；
-         *  - 非 http(s)（intent:// / market:// / tel: 等）→ 同样交系统分发；
-         *  - 本地页自身的首次加载（about:blank / data）不受影响，它不走这个回调。
-         * 一律 return true：WebView 自己一次都不去连。
+         * 所有导航请求在此处处理，禁止 WebView 自行联网：
+         *  - GitHub 域名链接 → 交由 [BrowseViewModel.navigate] 以命令行方式重新抓取页面；
+         *  - 其他 http(s) 链接（外站、Releases 下载链接等）→ 交由系统浏览器处理；
+         *  - 非 http(s) 链接（intent:// / market:// / tel: 等）→ 交由系统分发处理；
+         *  - 本地页首次加载（about:blank / data）不受影响，不经过此回调。
+         * 统一返回 true：禁止 WebView 自行发起任何连接。
          */
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val u = request?.url ?: return true
             val link = u.toString()
-            // github 官方域：在 App 内再抓一页；其余（外站、下载直链、intent:// 等）交系统
+            // GitHub 官方域名：在应用内重新抓取页面；其余链接（外站、下载直链、intent:// 等）交由系统处理
             if (link.startsWith("https://") && vm.isBrowseable(link)) {
                 vm.navigate(link)
                 return true
             }
-            runCatching {
-                ctx.startActivity(
-                    Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            }
+            openUrl(ctx, link, "未找到可打开链接的应用")
             return true
         }
 
         /**
-         * 子资源只有两种下场：`ghimg.local` 的图片由我们自己给，其余一律空响应。
-         * 主文档由 [WebView.loadDataWithBaseURL] 直接喂进来，仍交回内核处理。
+         * 子资源处理分两种情况：`ghimg.local` 的图片由本地提供，其余返回空响应。
+         * 主文档由 [WebView.loadDataWithBaseURL] 直接注入，仍交由内核处理。
          *
-         * 为什么要专门处理这个虚拟域名（第六轮的关键改动）：图片不再转 base64 塞进 HTML，
-         * 而是写成 `https://ghimg.local/<hash>` 这种**根本不存在**的地址，字节由这里现取现给
-         * （先查磁盘缓存，没有才联网）。这样
-         *  - 整页 HTML 从 2.4M 字符掉回 26KB 量级，正文不再被图片挤到「内容过长」截断；
-         *  - 首屏不必等几十张图，WebView 自己并发补齐，观感从 15s 级降到 1~2s 级。
-         * 域名不存在 + 其余一律空响应，所以「零外部请求」这条仍然成立：
-         * 万一生成的 HTML 里漏了别的 `src="https://…"`，这里照样掐掉，
-         * 不会让 WebView 用浏览器 UA 去连必然 403 的镜像站。
+         * 引入此虚拟域名的原因（关键设计）：图片不再转换为 base64 嵌入 HTML，
+         * 而是使用 `https://ghimg.local/<hash>` 形式的占位地址，字节数据在此回调中按需获取
+         *（优先查询磁盘缓存，缓存未命中时再发起网络请求）。此方案的效果：
+         *  - 整页 HTML 体积从约 2.4M 字符降至约 26KB，正文不再因图片数据过大而被截断；
+         *  - 首屏无需等待全部图片加载，WebView 自行并发补全，加载时间从约 15 秒降至约 1~2 秒。
+         * 域名不存在且其余请求均返回空响应，因此「零外部请求」约束仍然成立：
+         * 即使生成的 HTML 中遗漏了其他 `src="https://…"` 引用，此处也会拦截，
+         * 避免 WebView 使用浏览器 UA 连接必然返回 403 的镜像站。
          */
         override fun shouldInterceptRequest(
             view: WebView?,
@@ -302,10 +329,10 @@ private fun localWebView(ctx: Context, vm: BrowseViewModel): WebView = WebView(c
             val u = request?.url
             if (u != null && u.host == GhView.IMG_HOST) {
                 val key = u.lastPathSegment.orEmpty()
-                // 本回调不在 UI 线程，可以直接做同步取图；取不到给空响应（图就是显示不出来，
-                // 但不能让 WebView 转而去连真网络）
+                // 本回调不在 UI 线程，可执行同步图片读取；读取失败时返回空响应（图片不显示，
+                // 但禁止 WebView 转而连接真实网络）
                 GhView.loadImage(key)?.let { (bytes, mime) ->
-                    // 图片按 hash 寻址，同一 key 的内容永远不变，所以给一周的强缓存标记
+                    // 图片按 hash 寻址，同一 key 的内容固定不变，因此设置一周的强缓存策略
                     return WebResourceResponse(mime, null, ByteArrayInputStream(bytes)).apply {
                         responseHeaders = mapOf("Cache-Control" to "public, max-age=604800")
                     }

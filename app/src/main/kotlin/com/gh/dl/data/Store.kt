@@ -7,13 +7,13 @@ import android.provider.DocumentsContract
 import java.io.File
 
 /**
- * 用户自己授权的「共享文件夹」。
+ * 用户授权的「共享文件夹」。
  *
- * 用系统标准的 SAF（文件选择器）让用户主动挑一个目录，App 只拿到这一个目录的读写权，
- * 不需要任何存储权限，也只在这个目录里写东西。
+ * 通过系统标准的 SAF（文件选择器）由用户主动选择一个目录，App 仅获得该目录的读写权限，
+ * 不需要任何存储权限，也只在该目录内写入文件。
  *
- * 没设置的话，文件就放在 App 自己的私有目录
- * （手机存储/Android/data/com.gh.dl/files/），卸载 App 会一起没。
+ * 未设置时，文件存放于 App 私有目录
+ * （手机存储/Android/data/com.gh.dl/files/），卸载 App 时一并删除。
  */
 object Store {
 
@@ -32,7 +32,7 @@ object Store {
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-        } catch (e: Exception) { /* 有的机型不支持持久化，退化成只能本次会话用 */ }
+        } catch (e: Exception) { /* 部分机型不支持持久化，仅本次会话有效 */ }
         Settings.put(ctx, PREF, uri.toString())
     }
 
@@ -44,7 +44,7 @@ object Store {
                     u,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
-            } catch (e: Exception) { /* 忽略 */ }
+            } catch (e: Exception) { /* 忽略异常 */ }
         }
         Settings.put(ctx, PREF, "")
     }
@@ -108,11 +108,12 @@ object Store {
 
     /** 在授权目录下建（或复用）一个子目录，返回目录 URI */
     fun subDir(ctx: Context, name: String): Uri? {
-        findChild(ctx, rootDocUri(ctx) ?: return null, name, true)?.let { return it }
+        val root = rootDocUri(ctx) ?: return null
+        findChild(ctx, root, name, true)?.let { return it }
         return try {
             DocumentsContract.createDocument(
                 ctx.contentResolver,
-                rootDocUri(ctx)!!,
+                root,
                 DocumentsContract.Document.MIME_TYPE_DIR,
                 name
             )
@@ -126,7 +127,7 @@ object Store {
         findChild(ctx, parent, name, false)?.let { old ->
             try {
                 DocumentsContract.deleteDocument(ctx.contentResolver, old)
-            } catch (e: Exception) { /* 忽略 */ }
+            } catch (e: Exception) { /* 忽略异常 */ }
         }
         return try {
             DocumentsContract.createDocument(
@@ -151,6 +152,7 @@ object Store {
         }
         val total = all.size
         var done = 0
+        var failed = 0
         for (f in all) {
             val rel = try {
                 src.toURI().relativize(f.toURI()).path
@@ -159,23 +161,28 @@ object Store {
             }
             val parts = rel.split("/").filter { it.isNotBlank() }
             var parent = destDir
-            // 逐级建目录
+            // 逐级创建子目录
             for (i in 0 until parts.size - 1) {
                 parent = subDirIn(ctx, parent, parts[i]) ?: parent
             }
             val target = newFile(ctx, parent, parts.lastOrNull() ?: f.name)
             if (target == null) continue
             try {
-                ctx.contentResolver.openOutputStream(target)?.use { out ->
-                    f.inputStream().use { ins -> ins.copyTo(out, 64 * 1024) }
-                }
-            } catch (e: Exception) { /* 单个文件失败不中断整体 */ }
-            done++
-            if (done % 20 == 0 || done == total) {
-                onProgress("正在复制到共享文件夹… $done/$total")
+                val os = ctx.contentResolver.openOutputStream(target)
+                    ?: throw java.io.IOException("无法打开输出流")
+                os.use { out -> f.inputStream().use { ins -> ins.copyTo(out, 64 * 1024) } }
+                done++
+            } catch (e: Exception) {
+                // 单个文件失败不中断整体流程，但必须计入失败数：
+                // 原先无论成败都 done++，进度显示「全部完成」而目标目录实际缺文件
+                failed++
+                android.util.Log.w("Store", "复制失败：$rel", e)
+            }
+            if (done % 20 == 0 || done + failed == total) {
+                onProgress("正在复制到共享文件夹，$done/$total")
             }
         }
-        return true
+        return failed == 0
     }
 
     private fun subDirIn(ctx: Context, parent: Uri, name: String): Uri? {

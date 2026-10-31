@@ -24,7 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.AccountTree
@@ -111,9 +111,9 @@ fun CollapsibleNote(title: String, text: String) {
     }
 }
 
-/** 设置主页那行摘要用的短标签：直接打印设置里存的 id（jsoup / local / okhttp）用户看不懂，
- *  从二级页那些长描述里截又太长，所以单独给一份 2~4 字的口径。
- *  未知值原样返回，不猜——将来加新档忘了在这里登记时，界面上还能看见真实值。
+/** 设置主页摘要用短标签：直接输出设置中存储的 id（jsoup / local / okhttp）用户无法理解，
+ *  从二级页长描述中截取又过长，因此单独提供一份 2~4 字的简短名称。
+ *  未知值原样返回，不做推测——后续新增档位时若未在此处登记，界面上仍可看到真实值。
  */
 
 /** 解析引擎短名 */
@@ -133,10 +133,10 @@ private fun shortImage(id: String): String = when (id) {
     else -> id
 }
 
-/** 抓取器短名。**这里不能调 Fetcher.sourceOf()**：那要 stat 一串目录，
- *  而这一行是每次进入设置页都要参与组合的——同样的错误第八轮在浏览设置页、
- *  下载设置页都清过一遍（见各自的后台探测），主页这行没道理例外。
- *  「实际用的是内置还是本机那份」在设置 → 浏览 那页有准确显示。 */
+/** 抓取器短名。**此处不可调用 Fetcher.sourceOf()**：该方法需要 stat 多个目录，
+ *  而此行在每次进入设置页时都参与组合——同类问题当前实现已在浏览设置页、
+ *  下载设置页中修复过（详见各自的后台探测），主页此行同样需要避免。
+ *  「实际使用的是内置还是本机那份」在设置 → 浏览页中有准确显示。 */
 private fun shortFetcher(id: String): String = when (id) {
     Fetcher.OKHTTP -> "OkHttp"
     Fetcher.CURL -> "curl"
@@ -176,7 +176,7 @@ fun NavRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Un
     }
 }
 
-/** 设置分组小标题：图标 + 粗体标题，让四组（网络/下载/克隆/关于）一眼分清 */
+/** 设置分组小标题：图标 + 粗体标题，用于区分四组（网络/下载/克隆/关于） */
 @Composable
 private fun SettingsSectionHeader(text: String, icon: ImageVector) {
     Row(
@@ -193,7 +193,7 @@ private fun SettingsSectionHeader(text: String, icon: ImageVector) {
 fun SubTitle(text: String, onBack: () -> Unit, trailing: @Composable () -> Unit = {}) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) {
-            Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
         }
         Text(text, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
         trailing()
@@ -201,23 +201,23 @@ fun SubTitle(text: String, onBack: () -> Unit, trailing: @Composable () -> Unit 
 }
 
 /**
- * 「设置」Tab：阶段 4 起一级页只保留 4 个分组卡片（网络 / 下载 / 克隆 / 关于），
- * 点进去才是各自的二级页；二级页用 navigation-compose 的 NavHost 承载，返回栈由导航库管理。
+ * 「设置」Tab：自阶段 4 起一级页仅保留 4 个分组卡片（网络 / 下载 / 克隆 / 关于），
+ * 点击进入各自的二级页；二级页由 navigation-compose 的 NavHost 承载，返回栈由导航库管理。
  */
 @Composable
 fun SettingsTab() {
     val nav = LocalSettingsNav.current
 
     // 跨 Tab 跳转（克隆卡「去配置 SSH」等）携带的初始路由：
-    // 那些跳转发生在设置 NavHost 挂载之前，先记在 AppState.settingsDeepLink，待本页挂载后消费，
-    // 避免 NavHost 未提供 graph 时直接 navigate 抛错。
+    // 此类跳转发生在设置 NavHost 挂载之前，先记录在 AppState.settingsDeepLink 中，待本页挂载后消费，
+    // 避免 NavHost 未提供 graph 时直接 navigate 导致异常。
     LaunchedEffect(AppState.settingsDeepLink) {
         val dl = AppState.settingsDeepLink
         if (dl != null) {
             AppState.settingsDeepLink = null
-            nav.popBackStack(SettingsRoute.Root.route, inclusive = false) // 清掉陈旧历史，落到 [root, 目标]
-            // 注意：必须传 .route 字符串，不能传 SettingsRoute 对象——否则会命中 navigation-compose 的
-            // 泛型 navigate(route: T) 重载，它依赖 kotlinx.serialization（本项目未引入该插件）而崩溃。
+            nav.popBackStack(SettingsRoute.Root.route, inclusive = false) // 清除陈旧历史，落到 [root, 目标]
+            // 注意：必须传递 .route 字符串，不可传递 SettingsRoute 对象——否则会命中 navigation-compose 的
+            // 泛型 navigate(route: T) 重载，该重载依赖 kotlinx.serialization（本项目未引入该插件）导致崩溃。
             nav.navigate(dl.toSettingsRoute().route)
         }
     }
@@ -225,12 +225,12 @@ fun SettingsTab() {
     NavHost(navController = nav, startDestination = SettingsRoute.Root.route) {
         composable(SettingsRoute.Root.route) { RootPage() }
         composable(SettingsRoute.Network.route) { NetworkPage(nav, onBack = { nav.popBackStack() }) }
-        // 加速：二级导航页 + 两个三级页（下载加速 / 浏览加速），两套机制互不相通
+        // 加速：二级导航页 + 两个三级页（下载加速 / 浏览加速），两套机制相互独立
         composable(SettingsRoute.Accel.route) { AccelHubPage(nav, onBack = { nav.popBackStack() }) }
         composable(SettingsRoute.AccelDownload.route) { AccelDownloadPage(onBack = { nav.popBackStack() }) }
         composable(SettingsRoute.AccelBrowse.route) { AccelBrowsePage(onBack = { nav.popBackStack() }) }
         composable(SettingsRoute.Download.route) { DownloadPage(onBack = { nav.popBackStack() }) }
-        // 浏览：解析引擎 / 图片 / 抓取器 / 历史（第六轮新增，与「加速」并列而非合并）
+        // 浏览：解析引擎 / 图片 / 抓取器 / 历史（当前实现新增，与「加速」并列而非合并）
         composable(SettingsRoute.Browse.route) { BrowseSettingsPage(onBack = { nav.popBackStack() }) }
         composable(SettingsRoute.Clone.route) { ClonePage(nav, onBack = { nav.popBackStack() }) }
         composable(SettingsRoute.Ssh.route) { SshKeyScreen(onBack = { nav.popBackStack() }) }
@@ -261,11 +261,10 @@ private fun RootPage() {
     ) {
         item { Text("设置", fontWeight = FontWeight.Bold, fontSize = 20.sp) }
 
-        // 第五轮：一级页压成「取 / 存 / 用」三组，每组下面是二级页，二级页里再挂三级页。
-        // 原先每个分组的小标题和卡片标题一模一样（「下载」小标题 +「下载」卡片），
-        // 属于重复占位，所以只保留分组名，卡片本身不再重复。
-        // 「浏览」和「加速」是两件事：加速管「去哪个站取」，浏览管「取回来怎么处理」，
-        // 所以第六轮把浏览单独立一行，而不是继续往「加速」那页里塞。
+        // 当前实现：一级页整理为「取 / 存 / 用」三组，每组下挂二级页，二级页中再包含三级页。
+        // 分组小标题与卡片标题不重复：仅保留分组名（如「下载」），卡片不带同名标题。
+        // 「浏览」与「加速」为两个独立功能：加速控制「从哪个站点获取」，浏览控制「获取后如何处理」，
+        // 因此「浏览」独立为一行，不并入「加速」页面。
         item { SettingsSectionHeader("取：网络 · 加速 · 浏览", Icons.Filled.Wifi) }
         item {
             NavRow(
@@ -290,8 +289,7 @@ private fun RootPage() {
             NavRow(
                 icon = Icons.Filled.Language,
                 title = "浏览",
-                // 这一行以前直接打印设置里存的 id（jsoup / local / okhttp），
-                // 看着像没做完的调试输出；换成和二级页一致的短标签
+                // 此处输出与二级页一致的短标签，而非设置中存储的 id（jsoup / local / okhttp）
                 subtitle = "解析 " + shortEngine(vmSettings.parseEngine) +
                     " · 图片 " + shortImage(vmSettings.imageMode) +
                     " · 抓取 " + shortFetcher(vmSettings.fetcher) +
@@ -314,7 +312,7 @@ private fun RootPage() {
                 subtitle = if (vmSettings.cloneOn)
                     "已开启 · ${if (vmSettings.engine == "libgit2") "libgit2" else "JGit"} · " +
                         if (vmSettings.sshChannel == "ssh") "SSH 直连" else "HTTPS"
-                else "已关闭（克隆用默认方式）",
+                else "已关闭（克隆使用默认方式）",
                 onClick = { nav.navigate(SettingsRoute.Clone.route) }
             )
         }
@@ -344,7 +342,7 @@ private fun RootPage() {
             NavRow(
                 icon = Icons.Filled.Book,
                 title = "使用文档",
-                subtitle = "怎么下载 / 克隆 / 看懂进度（本地）",
+                subtitle = "下载 / 克隆 / 进度查看说明（本地）",
                 onClick = { nav.navigate(SettingsRoute.Docs.route) }
             )
         }
@@ -352,7 +350,7 @@ private fun RootPage() {
             NavRow(
                 icon = Icons.Filled.Info,
                 title = "关于",
-                // 版本号读 BuildConfig：写死过一次，结果改版本号时这行没跟着动
+                // 版本号取自 BuildConfig（唯一真值源），避免硬编码与 Gradle 配置不同步
                 subtitle = "合规说明 · 版本 " + com.gh.dl.BuildConfig.VERSION_NAME,
                 onClick = { nav.navigate(SettingsRoute.About.route) }
             )
@@ -361,7 +359,7 @@ private fun RootPage() {
             NavRow(
                 icon = Icons.Filled.Policy,
                 title = "开源许可",
-                subtitle = "内置程序与依赖的许可证（含 GPL 全文，分发包必须随附）",
+                subtitle = "内置程序与依赖的许可证（含 GPL 全文，分发包须随附）",
                 onClick = { nav.navigate(SettingsRoute.Licenses.route) }
             )
         }

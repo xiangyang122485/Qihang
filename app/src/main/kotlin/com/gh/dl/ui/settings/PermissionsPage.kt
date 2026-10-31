@@ -61,11 +61,11 @@ import com.gh.dl.data.Store
 import com.gh.dl.ui.*
 
 /**
- * 「权限」页：把 App 实际用到的 4 类权限/授权列出来，各自显示当前状态并可跳转到系统设置。
- *  - 通知（POST_NOTIFICATIONS）：Android 13+ 才需要，可在此请求；拒绝不阻断功能。
- *  - 电池优化：不强制弹，仅提供入口去「忽略电池优化」列表（Doze 下后台下载更稳）。
- *  - 安装未知应用（REQUEST_INSTALL_PACKAGES）：只在下载 APK 点「安装」时才真正检查，这里只显示状态与入口。
- *  - 存储授权（SAF）：未授权时跳到「下载」页让用户挑文件夹。
+ * 「权限」页：列出应用实际使用的 4 类权限/授权，各自显示当前状态并可跳转至系统设置。
+ *  - 通知（POST_NOTIFICATIONS）：仅 Android 13+ 需要，可在此请求；拒绝不阻断功能。
+ *  - 电池优化：不强制弹窗，仅提供入口跳转至「忽略电池优化」列表（Doze 模式下后台下载更稳定）。
+ *  - 安装未知应用（REQUEST_INSTALL_PACKAGES）：仅在下载 APK 后点击「安装」时检查，此处仅显示状态与入口。
+ *  - 存储授权（SAF）：未授权时跳转至「下载」页引导用户选择文件夹。
  */
 @Composable
 fun PermissionsPage(onBack: () -> Unit) {
@@ -76,23 +76,23 @@ fun PermissionsPage(onBack: () -> Unit) {
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED else true
 
-    // 这一页四项状态原来是在组合里直接查系统的（通知 / 电池优化 / 安装未知应用 / 存储授权），
-    // 两个毛病都在这轮一起处理：
-    //  1) 其中「存储授权」那项内部是一次 ContentResolver.query（binder + 可能冷启动 provider），
-    //     写在组合里等于每次重组一次 IPC —— 和本轮清掉的其它「组合里做 IO」是同一类问题；
-    //  2) 状态只在**进入本页时**取一次。用户的真实操作是「点进去系统设置 → 授权 → 按返回回来」，
-    //     回来时组合未必重跑，那一行还写着「未授权」，于是「明明授权了却还显示没授权」。
-    // 现在：一次性的读取放 IO 线程，并且**每次回到前台（ON_RESUME）重读一遍**。
+    // 本页四项状态原在组合中直接查询系统（通知 / 电池优化 / 安装未知应用 / 存储授权），
+    // 存在以下问题并一并处理：
+    //  1) 其中「存储授权」项内部为一次 ContentResolver.query（binder + 可能冷启动 provider），
+    //     写在组合中等于每次重组执行一次 IPC，与已修复的其他「组合中执行 IO」属同一类问题；
+    //  2) 状态仅在进入本页时获取一次。用户实际操作为「跳转至系统设置 → 授权 → 返回」，
+    //     返回时组合未必重新执行，状态行仍显示「未授权」，导致「已授权却显示未授权」。
+    // 当前实现：一次性读取移至 IO 线程，并且每次回到前台（ON_RESUME）重新读取。
     val vmSettings = LocalSettingsVM.current
     var notiState by remember { mutableStateOf(notiGranted) }
     var batteryOk by remember { mutableStateOf(false) }
     var installOk by remember { mutableStateOf(false) }
     var storeName by remember { mutableStateOf(vmSettings.sharedName) }
-    // 申请通知权限的回调也要改这个状态，所以声明在它之后
+    // 申请通知权限的回调亦需修改此状态，因此声明在其后
     val notiLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { notiState = it }
-    // resumeTick：每次 ON_RESUME +1，用它当 LaunchedEffect 的 key 触发重读
+    // resumeTick：每次 ON_RESUME 加 1，用作 LaunchedEffect 的 key 触发重新读取
     var resumeTick by remember { mutableIntStateOf(0) }
     val lifecycle = LocalLifecycleOwner.current
     DisposableEffect(lifecycle) {
@@ -108,11 +108,9 @@ fun PermissionsPage(onBack: () -> Unit) {
                 val pm2 = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
                 pm2.isIgnoringBatteryOptimizations(ctx.packageName)
             }.getOrDefault(false)
-            val i = runCatching {
-                Build.VERSION.SDK_INT < 26 || ctx.packageManager.canRequestPackageInstalls()
-            }.getOrDefault(false)
+            val i = runCatching { ctx.packageManager.canRequestPackageInstalls() }.getOrDefault(false)
             val s = if (Store.isSet(ctx)) Store.displayName(ctx) else ""
-            // 通知权限是本地检查（无 IPC），一并在这里读，口径和其他三项一致
+            // 通知权限为本地检查（无 IPC），一并在此读取，与其他三项一致
             val noti = Build.VERSION.SDK_INT < 33 ||
                 ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
                     PackageManager.PERMISSION_GRANTED
@@ -124,8 +122,8 @@ fun PermissionsPage(onBack: () -> Unit) {
         vmSettings.sharedName = r.second.first
         notiState = r.second.second
     }
-    // Store.isSet 也是本地 SP 读取（无 IPC），保留它做兜底：目录被外部撤销授权时
-    // displayName 会变空，但 isSet 未必同步，两种情况都算「没授权」才安全
+    // Store.isSet 亦为本地 SP 读取（无 IPC），保留作为补充判断：目录被外部撤销授权时
+    // displayName 会变空，但 isSet 未必同步，两种情况均判定为「未授权」以确保安全
     val storeOk = storeName.isNotBlank() && Store.isSet(ctx)
 
     Column(
@@ -142,12 +140,13 @@ fun PermissionsPage(onBack: () -> Unit) {
                 if (Build.VERSION.SDK_INT >= 33 && !notiState) {
                     notiLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 } else {
-                    // 已授权或低版本：打开 App 通知设置供复核
-                    runCatching {
-                        ctx.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                            putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                        })
-                    }
+                    // 已授权或低版本：打开应用通知设置供复核
+                    launchSettings(
+                        ctx,
+                        Settings.ACTION_APP_NOTIFICATION_SETTINGS,
+                        pkgUri = false,
+                        failHint = "该系统未提供应用通知设置页，请在系统设置中查找"
+                    )
                 }
             }
         )
@@ -158,10 +157,13 @@ fun PermissionsPage(onBack: () -> Unit) {
             state = if (batteryOk) "不受限制" else "受系统限制（建议忽略）",
             ok = batteryOk,
             onClick = {
-                // 不强制弹：只打开系统「忽略电池优化」列表，由用户自行选择
-                runCatching {
-                    ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                }
+                // 不强制弹窗：仅打开系统「忽略电池优化」列表，由用户自行选择
+                launchSettings(
+                    ctx,
+                    Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
+                    pkgUri = false,
+                    failHint = "该系统未提供电池优化设置页，可在系统设置的电池项中查找"
+                )
             }
         )
 
@@ -171,12 +173,13 @@ fun PermissionsPage(onBack: () -> Unit) {
             state = if (installOk) "已允许" else "未允许（装 APK 前需开启）",
             ok = installOk,
             onClick = {
-                // 跳到本应用的「未知来源应用安装」设置项（需 REQUEST_INSTALL_PACKAGES）
-                runCatching {
-                    ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                        data = Uri.fromParts("package", ctx.packageName, null)
-                    })
-                }
+                // 跳转至本应用的「未知来源应用安装」设置项（需 REQUEST_INSTALL_PACKAGES）
+                launchSettings(
+                    ctx,
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    pkgUri = true,
+                    failHint = "该系统未提供未知来源安装设置页，可在系统设置的权限项中查找"
+                )
             }
         )
 
@@ -187,15 +190,15 @@ fun PermissionsPage(onBack: () -> Unit) {
                     else "未授权（建议设置）",
             ok = storeOk,
             onClick = {
-                // 跳到「下载」页让用户挑一个共享文件夹
+                // 跳转至「下载」页引导用户选择共享文件夹
                 nav.navigate(SettingsRoute.Download.route)
             }
         )
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "本 App 只申请网络权限；写文件用系统文件授权（SAF），你亲手挑哪个文件夹它就只有那一个文件夹的权限。" +
-                "通知与电池优化都可选，拒绝也能正常下载。",
+            "应用仅申请网络权限。文件写入使用系统文件授权框架（SAF），授权范围限于所选文件夹。" +
+                "通知与电池优化均为可选项，拒绝不影响下载。",
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }

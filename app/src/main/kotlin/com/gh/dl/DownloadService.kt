@@ -26,12 +26,12 @@ import com.gh.dl.ui.AppState
 /**
  * 文件下载的前台服务。
  *
- * 为什么要它：切后台 / 锁屏 / 息屏时，纯后台线程下载会被系统限流甚至回收。
- * 挂上前台服务 + 通知栏进度 + PARTIAL_WAKE_LOCK，下载就能在后台跑完，
- * 跑完自动释放资源回到完全后台，不常驻。
+ * 需要此服务的原因：切换至后台 / 锁屏 / 息屏时，纯后台线程下载会被系统限流甚至回收。
+ * 使用前台服务加通知栏进度加 PARTIAL_WAKE_LOCK，下载可在后台完成，
+ * 完成后自动释放资源回到完全后台，不常驻。
  *
  * 实际下载逻辑仍由 [com.gh.dl.ui.DownloadsViewModel] 的线程执行（保持现有引擎不变），
- * 本服务只负责「维持前台存在 + 唤醒锁 + 进度通知」，通过读取 [AppState] 的下载状态字段刷新通知。
+ * 本服务仅负责「维持前台存在 + 唤醒锁 + 进度通知」，通过读取 [AppState] 的下载状态字段刷新通知。
  */
 class DownloadService : Service() {
 
@@ -40,24 +40,46 @@ class DownloadService : Service() {
         private const val NOTI_ID = 4201
         private const val WAKE_TAG = "GitHubDownloader::DownloadWakeLock"
 
-        /** 一个下载任务开始：计数 +1，必要时拉起前台服务 */
+        /**
+         * 一个下载任务开始：计数加 1，必要时启动前台服务。
+         * 计数与启动判定必须在同一把锁内：多个下载线程并发调用时，
+         * ++ 与 volatile 布尔只解决可见性，既不原子判重也会丢失计数
+         * （归零判定失效，前台通知常驻不消失）。
+         */
+        @Synchronized
         fun begin(ctx: Context, name: String) {
             AppState.activeDownloads++
             AppState.dlNotiName = name
             lastFinishSuppressed = false
-            if (!running) {
-                val i = Intent(ctx, DownloadService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
-                else ctx.startService(i)
+            if (!running) startSafely(ctx)
+        }
+
+        /**
+         * Android 12 起应用处于后台时启动前台服务会抛 ForegroundServiceStartNotAllowedException
+         * （dataSync 类型无后台豁免）。队列在后台继续派发任务时必然命中该限制，
+         * 因此降级为普通 startService；仍失败则仅记录，由下载线程继续执行。
+         */
+        private fun startSafely(ctx: Context) {
+            val i = Intent(ctx, DownloadService::class.java)
+            try {
+                ctx.startForegroundService(i)
+            } catch (t: Throwable) {
+                android.util.Log.w("DownloadService", "前台服务启动被拒绝，降级", t)
+                try {
+                    ctx.startService(i)
+                } catch (_: Throwable) {
+                    // 后台启动同样被拒（系统限制），下载进度改由界面刷新
+                }
             }
         }
 
         /**
-         * 一个下载任务结束：计数 -1；归零由服务内部自动收尾（降级通知 + 停止）。
-         * @param suppressDone 因「暂停」而结束时不弹「下载完成」通知（true），真正完成/失败为 false。
-         *   只有最后一个任务把 [AppState.activeDownloads] 减到 0 时，本值才决定最终是否弹完成通知，
-         *   避免并发批次里前面的暂停把后续真正完成的通知误抑制。
+         * 一个下载任务结束：计数减 1；归零时由服务内部自动收尾（降级通知 + 停止）。
+         * @param suppressDone 因「暂停」而结束时不弹出「下载完成」通知（true），真正完成或失败时为 false。
+         *   仅当最后一个任务将 [AppState.activeDownloads] 减至 0 时，本值才决定最终是否弹出完成通知，
+         *   避免并发批次中前面的暂停将后续真正完成的通知误抑制。
          */
+        @Synchronized
         fun end(ctx: Context, ok: Boolean, name: String, suppressDone: Boolean = false) {
             AppState.dlNotiOk = ok
             AppState.dlNotiName = name
@@ -66,7 +88,7 @@ class DownloadService : Service() {
             if (remaining == 0) lastFinishSuppressed = suppressDone
         }
 
-        /** 最近一次把 activeDownloads 减到 0 的结束是否「暂停」（暂停则不弹完成通知） */
+        /** 最近一次将 activeDownloads 减至 0 的结束是否为「暂停」（暂停则不弹出完成通知） */
         @Volatile
         internal var lastFinishSuppressed = false
 
@@ -80,7 +102,7 @@ class DownloadService : Service() {
     private val ticker = object : Runnable {
         override fun run() {
             refreshNotification()
-            // 没有任何下载在跑 → 收尾：降级为可删通知 + 停止前台 + 释放唤醒锁 + 停止服务
+            // 无下载任务运行 → 收尾：降级为可删除通知 + 停止前台 + 释放唤醒锁 + 停止服务
             if (AppState.activeDownloads <= 0) {
                 finish()
                 return
@@ -92,7 +114,6 @@ class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL) != null) return
         val ch = NotificationChannel(CHANNEL, "下载中", NotificationManager.IMPORTANCE_LOW)
@@ -101,9 +122,9 @@ class DownloadService : Service() {
     }
 
     /**
-     * 点通知回到 App。前台服务通知原本不可点，用户从通知栏看不到「下载完了去哪了」；
-     * 下载的是 APK 时，完成通知更是唯一的入口提示。
-     * FLAG_IMMUTABLE：targetSdk 31+ 必须显式声明可变性，否则 PendingIntent 直接抛异常。
+     * 点击通知返回 App。前台服务通知原本不可点击，用户从通知栏无法看到「下载完成后去向」；
+     * 下载 APK 时，完成通知更是唯一的入口提示。
+     * FLAG_IMMUTABLE：targetSdk 31+ 必须显式声明可变性，否则 PendingIntent 直接抛出异常。
      */
     private fun contentIntent(): PendingIntent {
         val i = Intent(this, MainActivity::class.java).apply {
@@ -127,7 +148,7 @@ class DownloadService : Service() {
             b.setContentText("${fmtSize(AppState.dlNotiBytes)} / ${fmtSize(AppState.dlNotiTotal)} · $pct%")
                 .setProgress(100, pct, false)
         } else {
-            b.setContentText("${fmtSize(AppState.dlNotiBytes)} · 下载中…").setProgress(0, 0, true)
+            b.setContentText("${fmtSize(AppState.dlNotiBytes)} · 下载中").setProgress(0, 0, true)
         }
         return b.build()
     }
@@ -148,11 +169,11 @@ class DownloadService : Service() {
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
                     .setContentIntent(contentIntent())
                     .setContentTitle(if (AppState.dlNotiOk) "下载完成 $name" else "下载失败 $name")
-                    .setContentText(if (AppState.dlNotiOk) "已保存到下载位置" else "可重试或检查网络")
+                    .setContentText(if (AppState.dlNotiOk) "已保存至下载位置" else "可重试，或检查网络连接")
                     .setOngoing(false)
                     .setAutoCancel(true)
                     .build()
-                // 用与进行中通知相同的 id 原地替换（避免同时出现两条通知），随后 DETACH 让它可被划掉
+                // 使用与进行中通知相同的 id 原地替换（避免同时出现两条通知），随后 DETACH 使其可被划掉
                 nm.notify(NOTI_ID, done)
             }
         } catch (e: Exception) { /* ignore */ }
@@ -167,7 +188,7 @@ class DownloadService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG).apply {
             setReferenceCounted(false)
-            acquire(6L * 60 * 60 * 1000) // 最长 6 小时，足够任何单次下载；服务停止时会释放
+            acquire(6L * 60 * 60 * 1000) // 最长 6 小时，足以覆盖任何单次下载；服务停止时释放
         }
     }
 
@@ -179,21 +200,39 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createChannel()
         acquireWake()
-        ServiceCompat.startForeground(
-            this, NOTI_ID, buildNotification(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
-        )
-        // 网络切换（WiFi ↔ 移动数据）不中断：监听默认网络，变化时重建 OkHttp（断点续传由引擎负责接着下）
+        // 通知渠道被用户关闭、前台服务配额受限或应用处于后台时，startForeground 会抛异常。
+        // 未捕获会中断 onStartCommand，使 running 停留 false 而通知不消失；
+        // 捕获后主动返回，下载本身由 ViewModel 线程继续执行（仅失去前台优先级与唤醒锁）。
+        try {
+            ServiceCompat.startForeground(
+                this, NOTI_ID, buildNotification(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
+            )
+        } catch (t: Throwable) {
+            android.util.Log.w("DownloadService", "startForeground 失败", t)
+            releaseWake()
+            return START_NOT_STICKY
+        }
+        // 网络切换（WiFi ↔ 移动数据）不中断：监听默认网络，变化时重建 OkHttp（断点续传由引擎负责继续）
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val req = NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
-            netCallback = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { Net.rebuild() }
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    // 先丢弃优选结果再重建客户端，否则 DNS 回调仍会命中上一张网络的失效 IP
+                    Net.clearPins()
+                    Net.rebuild()
+                }
+
+                override fun onLost(network: Network) {
+                    Net.clearPins()
+                }
             }
-            cm.registerNetworkCallback(req, netCallback!!)
-        } catch (e: Exception) { /* 低版本不支持回调也不影响下载 */ }
+            netCallback = cb
+            cm.registerNetworkCallback(req, cb)
+        } catch (e: Exception) { /* 低版本不支持回调亦不影响下载 */ }
         running = true
         main.removeCallbacks(ticker)
         main.postDelayed(ticker, 1000)

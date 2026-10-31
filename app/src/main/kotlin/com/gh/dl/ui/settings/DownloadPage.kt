@@ -1,7 +1,7 @@
 package com.gh.dl.ui.settings
 
-// 阶段 4「设置 Tab 去重重构」：把原 EnginePage（下载引擎）+ LocationPage（存储位置）+ SharedDirPage / PrivateDirPage
-// （共享/私有目录说明 + 缓存清除）合并为单一的「下载」分组页。一级页「下载」卡片点进来就是这里。
+// 设置 Tab 去重重构：将原 EnginePage（下载引擎）、LocationPage（存储位置）、SharedDirPage / PrivateDirPage
+// （共享 / 私有目录说明与缓存清除）合并为单一的「下载」分组页。一级页「下载」卡片点击后进入本页。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -50,7 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** 下载分组页：下载引擎 / 存储位置（共享文件夹 SAF 授权）/ 共享·私有目录说明 / 缓存占用与清除 */
+/** 下载分组页：下载引擎 / 存储位置（共享文件夹 SAF 授权）/ 共享与私有目录说明 / 缓存占用与清除 */
 @Composable
 fun DownloadPage(onBack: () -> Unit) {
     val vmSettings = LocalSettingsVM.current
@@ -59,11 +59,11 @@ fun DownloadPage(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf(vmSettings.sharedName) }
     var confirm by remember { mutableStateOf(false) }
-    // 这两项原来是 `remember { dirSize(...) }` 和直接调 available(ctx)：
-    // remember 的 lambda 是在**组合过程中、UI 线程上**跑的，「只算一次」不等于「不卡」。
-    // dirSize 要递归遍历两个缓存目录（图片缓存一多就是上千个文件，几百毫秒起），
-    // available 也要 stat nativeLibraryDir 并解一次 CA —— 一进这页就顿一下，
-    // 是用户说的「上下滑动 / 切页卡卡的」里的一处。挪到 IO 线程，先按「未知」渲染。
+    // 此二项原采用 `remember { dirSize(...) }` 与直接调用 available(ctx)：
+    // remember 的 lambda 在组合过程中、UI 线程上执行，「仅计算一次」不等同于「不阻塞」。
+    // dirSize 需递归遍历两个缓存目录（图片缓存可达上千个文件，耗时数百毫秒），
+    // available 需 stat nativeLibraryDir 并解析一次 CA，进入页面时产生卡顿。
+    // 当前已移至 IO 线程，先按「未知」渲染。
     var cacheSize by remember { mutableLongStateOf(-1L) }
     var ariaReady by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
@@ -96,13 +96,13 @@ fun DownloadPage(onBack: () -> Unit) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("文件下载引擎", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 CollapsibleNote(
-                    "引擎说明（点击展开）",
-                    "内置引擎把文件切块多线程拉，对支持 Range 的源（GitHub Release、jsDelivr、高校镜像）提速明显。" +
-                        "若某个引擎在你的设备上不好用，解析页每个文件行都有「复制/分享直链」图标，" +
-                        "把最终直链发给你的第三方下载器即可。\n" +
-                        "OkDownload：纯 JVM 多线程分片，最稳。\n" +
-                        "Aria2：原生 aria2c（已内置 arm64 二进制；其它 CPU 架构会自动回退单线程）。\n" +
-                        "兼容单线程：OkHttp 直拉，最稳但不提速。"
+                    "引擎说明",
+                    "内置引擎将文件切块后多线程下载，对支持 Range 的源（GitHub Release、jsDelivr、高校镜像）" +
+                        "速度提升明显。引擎在设备上表现不佳时，可用解析页文件行的「复制 / 分享直链」" +
+                        "将最终地址交由其他下载器。\n" +
+                        "· OkDownload（默认）：JVM 多线程分片；\n" +
+                        "· Aria2：原生 aria2c，内置 arm64 二进制，其他架构回退单线程；\n" +
+                        "· 兼容单线程：OkHttp 直连，不提速，兼容性最好。"
                 )
                 Spacer(Modifier.height(4.dp))
                 Text("当前引擎", fontSize = 13.sp)
@@ -128,7 +128,7 @@ fun DownloadPage(onBack: () -> Unit) {
                 if (vmSettings.dlEngine == "aria2" && !ariaReady) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "提示：当前设备未匹配到内置的 Aria2 二进制（仅 arm64 已内置），本次下载会自动用单线程。",
+                        "当前设备未匹配到内置 Aria2 二进制（仅内置 arm64），本次下载回退单线程。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.warning
                     )
                 }
@@ -142,15 +142,15 @@ fun DownloadPage(onBack: () -> Unit) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     if (name.isNotBlank()) "已授权：${name}/GitHub下载器/"
-                    else "App 私有目录（手机存储/Android/data/com.gh.dl/files/）",
+                    else "应用私有目录（手机存储/Android/data/com.gh.dl/files/）",
                     fontSize = 12.sp,
                     color = if (name.isNotBlank()) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.warning
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     if (name.isNotBlank())
-                        "下载的软件直接写进这个目录；克隆的仓库会先落在 App 私有目录，完成后自动复制一份过去。"
-                    else "这个目录卸载 App 会一起删掉，也不方便用别的软件打开。建议选一个自己的文件夹。",
+                        "下载的文件直接写入此目录；克隆的仓库先写入应用私有目录，完成后复制一份至该目录。"
+                    else "此目录随应用卸载删除，其他应用不便访问。建议选择用户自有文件夹。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(10.dp))
@@ -170,21 +170,21 @@ fun DownloadPage(onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(8.dp))
                 CollapsibleNote(
-                    "这个授权是怎么工作的（点击展开）",
-                    "用系统标准的文件授权（SAF）：你挑哪个文件夹，App 就只有那一个文件夹的读写权，" +
-                        "不需要任何存储权限，也不会去翻别的地方。建议新建一个专门的文件夹，比如「GitHub下载」。" +
-                        "选手机存储根目录也行，App 会在里面建一个 GitHub下载器 子目录。"
+                    "授权机制说明",
+                    "采用系统文件授权框架（SAF）：授权后应用仅获得所选文件夹的读写权限，" +
+                        "不需要存储权限，也不访问其他位置。建议新建专用文件夹（如「GitHub下载」）；" +
+                        "选择存储根目录时，应用在其中创建 GitHub下载器 子目录。"
                 )
             }
         }
 
         // ---- 共享目录 vs 私有目录 说明（原 SharedDirPage / PrivateDirPage 合并） ----
         CollapsibleNote(
-            "共享目录 与 私有目录 有什么区别（点击展开）",
-            "共享目录 = 你用系统文件选择器授权的文件夹（写入 GitHub下载器/ 子目录），文件用手机文件管理器就能找到；" +
-                "没设共享目录时，所有文件落在私有目录。\n" +
-                "私有目录 = App 自身的 files 目录（Android/data/com.gh.dl/files/），卸载 App 会一起没，但不用任何授权。\n" +
-                "两者都只存已经下载完成的文件；清除缓存不会动它们。"
+            "共享目录与私有目录",
+            "共享目录为用户授权的文件夹，文件写入其 GitHub下载器/ 子目录，可由文件管理器访问；" +
+                "未设置时文件全部写入私有目录。\n" +
+                "私有目录为应用自身的 files 目录（Android/data/com.gh.dl/files/），随应用卸载删除，无需授权。\n" +
+                "两者仅存放已下载完成的文件，清除缓存不影响其中内容。"
         )
 
         // ---- 缓存占用与清除（原 SharedDirPage / PrivateDirPage 的缓存清除合并） ----
@@ -198,7 +198,7 @@ fun DownloadPage(onBack: () -> Unit) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "只清理 App 缓存数据（cache 目录），不会删除已经下载完成的文件。",
+                    "仅清理缓存目录（cache），不删除已下载完成的文件。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(8.dp))
@@ -213,17 +213,17 @@ fun DownloadPage(onBack: () -> Unit) {
             title = { Text("清除缓存") },
             text = {
                 Text(
-                    "确定只清理 App 缓存（" +
-                        (if (cacheSize < 0) "统计中…" else fmtSize(cacheSize)) + "）吗？\n" +
-                        "这不会影响你已经下载完成的文件。",
+                    "确定仅清理应用缓存（" +
+                        (if (cacheSize < 0) "统计中…" else fmtSize(cacheSize)) + "）？\n" +
+                        "此操作不影响已下载完成的文件。",
                     fontSize = 13.sp
                 )
             },
             confirmButton = {
                 Button(onClick = {
                     confirm = false
-                    // 递归删两个缓存目录是纯磁盘活，原来直接在点击回调（UI 线程）里做，
-                    // 缓存大的时候点一下能卡住界面；现在放后台，删完把占用读回来
+                    // 递归删除两个缓存目录为纯磁盘操作，原在点击回调（UI 线程）中执行，
+                    // 缓存较大时会导致界面卡顿；当前已移至后台线程，完成后回读占用大小
                     scope.launch {
                         val r = withContext(Dispatchers.IO) {
                             val n = clearAppCache(ctx)

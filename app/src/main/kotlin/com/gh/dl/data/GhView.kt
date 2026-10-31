@@ -20,59 +20,46 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
 /**
- * 「浏览」的抓取 + 本地渲染（不依赖 WebView 联网）。
+ * 「浏览」功能的抓取与本地渲染，WebView 不联网。
  *
- * 为什么不用 WebView 直接打开网页（真机 + 实测双重证实）：
- *  1. 下载用的加速前缀（gh-proxy 那套）是**文件**中转。把仓库主页交给它，它判断不出是文件，
- *     就返回**自己的首页**（实测：200、约 60KB、标题「GitHub加速下载代理 - 快速访问 GitHub 文件」）。
- *     所以前缀对网页根本无效，这是上一版方案的致命错误。
- *  2. 网页镜像 githubfast.com **专门拦浏览器**：同一个 URL，
- *     浏览器 UA → 403「To prevent abuse, only git and CLI access are allowed」；
- *     `curl/8.4.0` → 200 完整页面（实测 330KB~690KB）。WebView 发的正是浏览器 UA，所以必然打不开。
+ * WebView 不能直接打开网页：
+ *  1. 下载加速前缀仅中转文件，处理仓库主页时返回其自身首页（HTTP 200）；
+ *  2. 网页镜像站拦截浏览器 UA（403），仅放行 git/curl 类 UA（200，330KB~690KB）。
  *
- * 于是改成用户提的思路：**像 git / curl 那样用命令行 UA 抓 HTML，本地解析后自己渲染**。
- * WebView 只显示我们生成的这一页，页内没有任何外部资源，所以它不需要也不能联网。
+ * 实现方式：以 CLI UA 抓取 HTML，本地解析后生成页面交 WebView 显示，
+ * 页内不含外部资源。
  *
- * 可行性关键点（已实测）：
- *  - 该镜像的 README 是**服务端渲染**的，抓来的 HTML 里直接有 `<article class="markdown-body">`
- *    正文和已转好的 `<a>`/`<img>`，因此不需要 JS 引擎；
- *  - 源码文件页的逐行内容也在同一份 HTML 的 JSON（rawLines）里，不用再发第二次请求；
- *  - 目录页能从 `td .react-directory-truncate a` 拿到条目名与链接；
- *  - releases / issues / blob / tree / raw 各页该镜像都返回 200。
+ * 页面结构依据（服务端渲染，无需 JS）：
+ *  - README 正文位于 `<article class="markdown-body">`，链接与图片已完成转换；
+ *  - 源码文件页的逐行内容位于同份 HTML 的 rawLines JSON；
+ *  - 目录页条目位于 `td .react-directory-truncate a`；
+ *  - releases / issues / blob / tree / raw 页均可用同一方式抓取。
  */
 object GhView {
 
-    /** 命令行特征 UA：镜像站放行 git/curl/wget 类，拦浏览器类 */
+    /** 命令行特征 UA：镜像站放行 git/curl/wget 类，拦截浏览器类 */
     const val CLI_UA = "curl/8.4.0"
 
     /**
      * HTML 解析引擎（「设置 → 浏览 → 解析引擎」）。
      *
-     * 先说清一件事：用户点名的 selectolax / parsel / lxml / html5lib **都是 Python 库**，
-     * Android APK 里没有 CPython，带不进去（要带就得打包整个解释器 + 原生扩展，包体和风险都不划算）。
-     * 这里给的是它们在 JVM 上的对等物，并在设置页里如实标注对应关系：
-     *  - [ENGINE_JSOUP]   = 默认，Jsoup 的 HTML5 解析器（等价 html5lib 的建树口径，且唯一自带 CSS 选择器）
-     *  - [ENGINE_XML]      = Jsoup 的 XML 解析器（lxml 的 XML 模式对等物；实测快 2~3 倍，
-     *                        代价是遇到不闭合标签可能整页失败，所以失败会自动回落默认引擎）
-     *  - [ENGINE_REPAIR]   = 先用 nu.validator 的 WHATWG html5 解析器把畸形 HTML **修一遍**
-     *                        （html5lib 的 JVM 对等物），再交给 Jsoup 建树 —— 最稳，慢一档
-     *  - [ENGINE_FAST]     = 零拷贝直取（Jericho 对等思路）：先在原文里定位
-     *                        `<article class="markdown-body">` 的字符区间，只把那 20~30KB 交给
-     *                        Jsoup 解析。实测整页 330KB 解析 11ms，切正文后只需约 1ms，
-     *                        是这四项里唯一能**真的**让浏览变快的选项。
-     * 实测数据（同一份 CYQawa/YunX 页面，7 次取中位数，见修复报告）：
-     *  jsoup-html5 11.3ms / jsoup-xml 3.7ms / validator 23.0ms / tagsoup 19.5ms / jericho 8.2ms，
-     * 五者对畸形 HTML 都不抛异常 —— 所以「解析器能力不足」并不是截断的原因，真正的原因见 [IMG_HOST]。
+     * 四档均为 JVM 实现，对应关系：
+     *  - [ENGINE_JSOUP]  默认，Jsoup HTML5 解析器（html5lib 建树规则，自带 CSS 选择器）
+     *  - [ENGINE_XML]    Jsoup XML 解析器，速度快 2~3 倍；未闭合标签会导致整页失败并回落默认档
+     *  - [ENGINE_REPAIR] 先用 nu.validator 的 WHATWG 解析器修复畸形 HTML，再交 Jsoup 建树，容错最强
+     *  - [ENGINE_FAST]   先在原文定位 `<article class="markdown-body">` 区间（20~30KB），
+     *                    仅解析该区间，处理量最小（整页 330KB 的解析量降至约 1/10）
+     * 四档均不对畸形 HTML 抛异常。页面截断与解析器能力无关，成因见 [IMG_HOST]。
      */
     const val ENGINE_JSOUP = "jsoup"
     const val ENGINE_XML = "jsoup-xml"
     const val ENGINE_REPAIR = "repair"
     const val ENGINE_FAST = "fast"
     val ENGINES = listOf(
-        ENGINE_JSOUP to "Jsoup HTML5（默认，最稳）",
-        ENGINE_XML to "XML 模式（快 2~3 倍，畸形页面会自动回落）",
-        ENGINE_REPAIR to "先修复再解析（html5lib 对等，最抗畸形）",
-        ENGINE_FAST to "只解析正文（最快，推荐慢网络时用）"
+        ENGINE_JSOUP to "Jsoup HTML5（默认，最稳定）",
+        ENGINE_XML to "XML 模式（速度快 2~3 倍，畸形页面自动回落）",
+        ENGINE_REPAIR to "先修复再解析（容错最强）",
+        ENGINE_FAST to "仅解析正文（处理量最小）"
     )
 
     /** 图片显示方式（「设置 → 浏览 → 图片」） */
@@ -80,20 +67,19 @@ object GhView {
     const val IMAGE_BASE64 = "base64"
     const val IMAGE_OFF = "off"
     val IMAGE_MODES = listOf(
-        IMAGE_LOCAL to "本地缓存（推荐：正文不被挤掉，首屏快，7 天内复用）",
-        IMAGE_BASE64 to "内联进页面（旧行为：整页自包含，但很慢、会挤掉正文）",
+        IMAGE_LOCAL to "本地缓存（字节按需获取，7 天内复用）",
+        IMAGE_BASE64 to "内联至页面（整页自包含，占用正文预算）",
         IMAGE_OFF to "不显示图片（最省流量）"
     )
 
-    /** 内置网页镜像站（用户没自定义时的默认值） */
+    /** 内置网页镜像站（用户未自定义时的默认值） */
     const val DEFAULT_PAGE_MIRROR = "https://githubfast.com"
 
     /**
-     * 网页镜像站（按顺序试）。只放「实测对 CLI UA 放行、且能代理 HTML 页面」的站。
-     * 注意：下载用的加速前缀（[Accel.prefix]）**不属于**这里——它代理不了网页，见类注释。
+     * 网页镜像站列表（按顺序尝试），仅包含对 CLI UA 放行且能代理 HTML 页面的站点。
+     * 下载加速前缀（[Accel.prefix]）不属于此列表，差异见类注释。
      *
-     * 做成可变列表是因为这类站换域名很频繁（实测 hub.gitmirror / kkgithub / bgithub / ghp.ci
-     * 当前全部连不通，只剩 githubfast 一个能用），所以允许在「设置 → 加速」里自己填。
+     * 设为可变：此类站点域名更换频繁，允许在「设置 → 加速 → 浏览加速」中自行填写。
      */
     var pageMirrors: List<String> = listOf(DEFAULT_PAGE_MIRROR)
         set(value) {
@@ -102,7 +88,7 @@ object GhView {
                 .distinct()
         }
 
-    /** 从任意文本（剪贴板 / 文件 / 多行输入）里提取镜像站地址 */
+    /** 从任意文本（剪贴板 / 文件 / 多行输入）中提取镜像站地址 */
     fun parseMirrors(text: String): List<String> = text.lines()
         .map { it.trim().trimEnd('/') }
         .filter { it.startsWith("http://", true) || it.startsWith("https://", true) }
@@ -115,12 +101,12 @@ object GhView {
     class MirrorProbe(val ok: Boolean, val ms: Long, val detail: String)
 
     /**
-     * 探一个镜像站能不能用：抓一个真实仓库主页（和浏览完全同款的方式：CLI UA + [Net.browse]），
-     * 看返回的是不是真页面。
+     * 探测单个镜像站是否可用：fetch 一个真实仓库主页（与浏览功能完全相同的方式：CLI UA + [Net.browse]），
+     * 验证返回内容是否为真实页面。
      *
-     * 为什么不能只看状态码：gh-proxy 那类文件前缀对网页也会回 200，只是回的是它自己的首页，
-     * 所以这里额外要求「标题里没有它自己的广告词」且「HTML 里有 markdown-body / 仓库标记」。
-     * [base] 传空串表示探「直连 GitHub」这一条。
+     * 仅检查状态码不足以判定：文件加速前缀对网页同样返回 200，内容为其自身首页，
+     * 故额外要求标题不含自身广告词、HTML 含 markdown-body 或仓库标记。
+     * [base] 传空串表示探测「直连 GitHub 官方」。
      */
     fun probeMirror(base: String): MirrorProbe {
         val target = if (base.isBlank()) "https://github.com/microsoft/vscode"
@@ -137,8 +123,8 @@ object GhView {
                 MirrorProbe(
                     looksRepo && !selfHome, ms,
                     when {
-                        selfHome -> "返回的是它自己的首页（不是仓库页）"
-                        !looksRepo -> "不是仓库页（${body.length / 1024}KB）"
+                        selfHome -> "返回的是其自身首页（非仓库页）"
+                        !looksRepo -> "非仓库页（${body.length / 1024}KB）"
                         else -> "正常 · ${body.length / 1024}KB"
                     }
                 )
@@ -147,8 +133,8 @@ object GhView {
     }
 
     /**
-     * 由设置页把用户自定义的镜像站灌进来；空列表表示「没自定义」，回落到内置那一个。
-     * （不这样做的话，用户删光列表就会一个镜像都没有，浏览直接只能直连。）
+     * 由设置页注入用户自定义的镜像站列表；空列表表示「未自定义」，回落至内置默认站。
+     * 若不做此处理，用户清空列表后将无任何镜像可用，浏览功能只能直连官方。
      */
     fun applyMirrors(list: List<String>) {
         pageMirrors = if (list.isEmpty()) listOf(DEFAULT_PAGE_MIRROR) else list
@@ -156,80 +142,83 @@ object GhView {
 
     /**
      * 当前生效的镜像域名后缀（页面域 githubfast.com、资产域 usercontent./assets./external.…）。
-     * 跟着 [pageMirrors] 走，用户换站以后地址折算才不会认错。
+     * 跟随 [pageMirrors] 变化，用户更换站点后地址需相应折算。
      */
     private val mirrorSuffix: String
         get() = runCatching { URL(pageMirrors.firstOrNull() ?: DEFAULT_PAGE_MIRROR).host }
             .getOrDefault("githubfast.com")
 
-    /** 开头的「scheme:」片段（只认合法 scheme 字符，避免把 "a:b" 之类误判） */
+    /** 开头的「scheme:」片段（仅识别合法 scheme 字符，避免将 "a:b" 等误判） */
     private val SCHEME_IN_PREFIX = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
     /** 点分十进制 IPv4 字面量 */
     private val IPV4 = Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$")
 
-    /** GitHub 自家资产的域名后缀（其余按「外站图」处理，走镜像的通用转发通道） */
+    /** 以 IPv6 字面量书写的 IPv4：映射地址、兼容地址、NAT64 前缀 */
+    private val RE_V4_MAPPED = Regex("^(::ffff:|::|64:ff9b::)([0-9a-f.]+)$")
+
+    /** GitHub 官方资产的域名后缀（其余按「外站图」处理，走镜像的通用转发通道） */
     private val GITHUB_IMAGE_SUFFIXES: List<String>
         get() = listOf("github.com", "githubusercontent.com", "githubassets.com", mirrorSuffix)
 
-    /** 单张图片大小上限（超过就不取，避免一张 4K 长图吃掉整页配额） */
+    /** 单张图片大小上限（超过则不 fetch，避免单张大图耗尽整页配额） */
     private const val MAX_IMAGE_BYTES = 2_000_000L
 
     /**
-     * 图片缓存的新鲜期。缓存文件名只用「图片 URL 的 hash」当 key，**不含内容指纹**，
-     * 所以作者把同一张图换掉（URL 不变、内容变了）时，没有过期时间就永远显示旧图。
-     * 7 天是一个折中：README 配图不会天天改，而一次重新取图只花 1 个请求。
-     * 到期后按未命中处理 → 重新取 → 覆盖同名文件（见 [loadImage]）。
+     * 图片缓存有效期。缓存文件名仅使用「图片 URL 的 hash」作为 key，**不含内容指纹**，
+     * 因此当作者替换同一张图片（URL 不变、内容变化）时，若无过期机制将永远显示旧图。
+     * 7 天为折中值：README 配图不会频繁变更，而一次重新 fetch 仅需 1 个请求。
+     * 到期后按未命中处理 → 重新 fetch → 覆盖同名文件（见 [loadImage]）。
      */
     private const val IMAGE_CACHE_TTL_MS = 7L * 24 * 3600 * 1000
 
-    /** 与 [Fetcher.MAX_BODY_BYTES] 同口径，只用于把「响应被截」写成用户看得懂的话 */
+    /** 与 [Fetcher.MAX_BODY_BYTES] 同一取值标准，仅用于将「响应被截断」转换为用户可读提示 */
     private const val MAX_RESPONSE_MB = 8
 
     /**
-     * 「本地缓存」模式下同时取图的最大并发数。
-     * WebView 会按视口并发发起一批 ghimg.local 请求，不设限的话用户快速滑过长 README
-     * 能一次打出十几条请求，很容易被镜像站按 IP 限流（连主文档都开始 403）。
-     * 命中缓存不占名额，只有真要联网时才排队。
+     * 「本地缓存」模式下同时 fetch 图片的最大并发数。
+     * WebView 会按视口并发发起一批 ghimg.local 请求，若不加限制，用户快速滑过长 README
+     * 可能一次触发十余条请求，易被镜像站按 IP 限流（连主文档都开始返回 403）。
+     * 命中缓存不占名额，仅在实际联网时排队。
      */
     private const val IMAGE_FETCH_PARALLEL = 4
     private val imageFetchSlots = Semaphore(IMAGE_FETCH_PARALLEL, true)
 
-    /** 等别的线程取同一张图的时间上限 / 排队抢取图名额的时间上限 */
+    /** 等待其他线程 fetch 同一张图片的时间上限 / 排队获取 fetch 名额的时间上限 */
     private const val IN_FLIGHT_WAIT_S = 8L
     private const val SLOT_WAIT_S = 3L
 
     /**
-     * 同一页里可能有多条 [shouldInterceptRequest] 并发进来（不同线程），
-     * 而缓存的读、写、按名删除都是多步操作——不加锁就会出现
-     * 「两个线程各写同一个 key，字节交叉 → 落盘一张坏图」，
-     * 而 WebView 不联网，坏图永远没有第二次机会（只能靠这里自己发现并重取）。
-     * 用固定的一组锁按 key 分片：既避免全局锁把并发压成串行，
-     * 又保证同一张图的读写互斥。
+     * 同一页面中可能存在多条 [shouldInterceptRequest] 并发调用（不同线程），
+     * 而缓存的读、写、按名删除均为多步操作。若不加锁，可能出现
+     * 「两个线程各写同一个 key，字节交叉 → 落盘一张损坏的图片」的情况，
+     * 而 WebView 不联网，损坏图片无法自动重试（仅能依赖此处自行发现并重 fetch）。
+     * 采用固定一组锁按 key 分片：既避免全局锁将并发压成串行，
+     * 又保证同一张图片的读写互斥。
      */
     private const val LOCK_STRIPES = 16
     private val imgLocks = Array(LOCK_STRIPES) { Any() }
     private fun lockFor(key: String): Any =
         imgLocks[(key.hashCode() and Int.MAX_VALUE) % LOCK_STRIPES]
 
-    /** 缓存文件名里的 key 必须是纯十六进制短串，否则一律拒绝读写（防目录穿越） */
+    /** 缓存文件名中的 key 必须为纯十六进制短串，否则一律拒绝读写（防止目录穿越） */
     private val KEY_RE = Regex("^[0-9a-f]{8,16}$")
 
     /**
-     * 正在联网取图的 key → 完成闩。
-     * WebView 对同一张图可能并发发起两次请求（不同 ROM 内核行为不一样），
-     * 去重以后只有第一个线程真的联网，其余等它落盘后直接读缓存——
-     * 这样既不重复耗流量，也不会两个线程同时对同一个文件写。
+     * 正在联网 fetch 图片的 key → 完成闩。
+     * WebView 对同一张图片可能并发发起两次请求（不同 ROM 内核行为不同），
+     * 去重后仅第一个线程实际联网，其余等待其落盘后直接读取缓存，
+     * 既不重复消耗流量，也避免两个线程同时写入同一文件。
      */
     private val inFlight = ConcurrentHashMap<String, CountDownLatch>()
 
-    /** base64 内联模式（旧行为，作为可选档保留）的整页配额 */
+    /** base64 内联模式（作为可选档保留）的整页配额 */
     private const val MAX_INLINE_TOTAL_BYTES = 2_000_000L
 
     /**
-     * 一页最多处理多少张图。
-     * 「本地缓存」模式下这个数字不再受 HTML 体积约束（页面里只有一个短地址，字节都在磁盘上），
-     * 所以放宽到 120；base64 模式仍然只吃 [MAX_IMAGES_INLINE] 张，否则正文会被挤光。
+     * 单页最多处理多少张图片。
+     * 「本地缓存」模式下此数值不再受 HTML 体积约束（页面中仅含一个短地址，字节存储在磁盘），
+     * 因此放宽至 120；base64 模式仍限制为 [MAX_IMAGES_INLINE] 张，否则正文空间将被挤占。
      */
     private const val MAX_IMAGES = 120
     private const val MAX_IMAGES_INLINE = 40
@@ -237,21 +226,21 @@ object GhView {
     /**
      * 图片的本地虚拟域名。
      *
-     * 为什么不再把图片转 base64 塞进 HTML（实测数据，CYQawa/YunX 这一页）：
-     *  - 正文本身只有约 26KB，但 13 张图内联后整页 HTML 涨到 **2.42M 字符**；
-     *  - 于是 [MAX_BODY_CHARS] 预算被图片自己吃满，[truncateToBudget] 从尾部按元素丢弃，
-     *    丢掉的正好是「截图」之后的全部内容 —— 用户看到的「内容过长，后面部分未显示」就是这么来的，
-     *    **不是解析器能力不足**（换 selectolax / lxml / html5lib 也救不了，因为它们面对的仍是
-     *    同一份已经完整的 HTML）；
-     *  - 而且取图是串在渲染关键路径上的：同一页「带图 15.2s / 不带图 1.4s」。
+     * 不再将图片转为 base64 嵌入 HTML 的原因（实测数据，CYQawa/YunX 页面）：
+     *  - 正文本身仅约 26KB，但 13 张图片内联后整页 HTML 膨胀至 **2.42M 字符**；
+     *  - [MAX_BODY_CHARS] 预算被图片自身耗尽，[truncateToBudget] 从尾部按元素丢弃，
+     *    丢弃的内容恰好为「截图」之后的全部 —— 「内容过长，后面部分未显示」即由此产生，
+     *    **并非解析器能力不足**（更换 selectolax / lxml / html5lib 也无法解决，因为它们面对的仍是
+     *    同一份已完整的 HTML）；
+     *  - 取图操作串行于渲染关键路径：同一页面「带图 15.2s / 不带图 1.4s」。
      *
-     * 现在改成：HTML 里只写 `https://ghimg.local/<hash>`，字节由 WebView 的
-     * [android.webkit.WebViewClient.shouldInterceptRequest] 找我们要（见 [loadImage]），
-     * 我们从磁盘缓存或网络取。于是
-     *  1. 正文不再被图片挤掉，也不再需要截断；
-     *  2. 首屏只要主文档的 1.4s，图片由 WebView 自己并发补齐；
-     *  3. 图片落到缓存目录，第二次浏览同一页秒出、且不重复耗流量。
-     * 注意这仍然是「零外部请求」：ghimg.local 不存在，请求只会被我们本地应答。
+     * 当前实现：HTML 中仅写入 `https://ghimg.local/<hash>`，字节由 WebView 的
+     * [android.webkit.WebViewClient.shouldInterceptRequest] 回调获取（见 [loadImage]），
+     * 由本地磁盘缓存或网络 fetch。因此：
+     *  1. 正文不再被图片挤占，也不再需要截断；
+     *  2. 首屏仅需主文档的 1.4s，图片由 WebView 自行并发补齐；
+     *  3. 图片落盘缓存，第二次浏览同一页面时直接读取，不重复消耗流量。
+     * 注意这仍然是「零外部请求」：ghimg.local 域名不存在，请求仅由本地应答。
      */
     const val IMG_HOST = "ghimg.local"
 
@@ -260,93 +249,94 @@ object GhView {
         override fun removeEldestEntry(eldest: Map.Entry<String, List<String>>?) = size > 4_000
     }
 
-    /** 正文长度上限（字符）：超了就按元素丢尾部并提示，避免界面卡顿 */
+    /** 正文长度上限（字符）：超出则按元素丢弃尾部并提示，避免界面卡顿 */
     private const val MAX_BODY_CHARS = 2_500_000
 
-    /** 源码文件行数上限（再多也没人在手机上逐行看，且 HTML 会明显变大） */
+    /** 源码文件行数上限（手机端逐行阅读意义有限，且 HTML 体积会显著增大） */
     private const val MAX_CODE_LINES = 5_000
 
     /**
-     * 整页取图的时间预算，**只在 base64 内联模式下用**（默认模式由 WebView 自己按需取图，
-     * 不在渲染关键路径上，不需要这个预算）。README 里可能有几十个死链，每张都等连接超时的话
-     * 一页要等好几分钟，所以预算用完就停止内联（剩下的 <img> 直接删掉）。
+     * 整页取图的时间预算，**仅在 base64 内联模式下使用**（默认模式由 WebView 自行按需取图，
+     * 不在渲染关键路径上，无需此预算）。README 中可能存在数十个死链，若每个都等待连接超时，
+     * 单页可能耗时数分钟，因此预算耗尽后停止内联（剩余 <img> 直接删除）。
      */
     private const val IMAGE_BUDGET_MS = 12_000L
 
     /**
      * 取图并发数。实测（本 App 所在网络到镜像）单张约 1.1s，一个 9 张图的 README
-     * 串行取要 10s，4 并发能压到 3s 上下；再多就只是在跟同一个站点抢连接了。
+     * 串行 fetch 需 10s，4 并发可压缩至 3s 左右；更多并发仅会与同一站点争抢连接。
      */
     private const val IMAGE_PARALLEL = 4
 
     /**
-     * 取图接缝：默认走真实网络 [fetchImage]。
-     * 单测里把它换成固定返回 null 的实现，这样 [render] 全程不碰网络，
-     * 既能验证「取不到的图必须删掉」，也不会让测试依赖外网可达性。
+     * 取图实现注入点：默认使用真实网络 [fetchImage]。
+     * 单测中将其替换为固定返回 null 的实现，使 [render] 全程不访问网络，
+     * 既可验证「无法获取的图片必须删除」的逻辑，也不依赖外网可达性。
      */
-    /** 真实取图实现（暴露成顶层值，方便单测换掉后又能原样还原） */
+    /** 真实取图实现（暴露为顶层值，便于单测替换后还原） */
     internal val realImageLoader: (List<String>) -> Pair<ByteArray, String>? = ::fetchImage
 
     internal var imageLoader: (List<String>) -> Pair<ByteArray, String>? = realImageLoader
 
-    /** 图片缓存上限（字节）。手机存储不能被浏览功能无限吃，超了就按最久未访问删。 */
+    /** 图片磁盘缓存上限（字节）。手机存储不应被浏览功能无限占用，超出后按最久未访问删除。 */
     private const val IMAGE_CACHE_BYTES = 200_000_000L
 
     /**
      * 图片磁盘缓存目录，由界面层在启动时注入（`cacheDir/ghimg`）。
-     * 放 cacheDir 而不是 filesDir：它随时可重建，系统存储紧张时也能自己清，
-     * 不像历史 / 设置那样需要「用户数据」的持久性。
-     * 没注入（比如单测）时所有缓存读写静默跳过，功能退化成「每次现取」。
+     * 使用 cacheDir 而非 filesDir 的原因：该目录可随时重建，系统存储紧张时也可自行清理，
+     * 不像历史 / 设置那样需要「用户数据」级别的持久性。
+     * 未注入时（如单测环境）所有缓存读写静默跳过，功能退化为「每次实时 fetch」。
      */
     @Volatile var imageCacheDir: File? = null
 
     /**
      * 按 [AppState.parseEngine] 解析整页。
      *
-     * 每一档都是「先按自己的口径试，失败就回落到默认 HTML5 档」——因为这一层失败的表象
-     * 是用户看到一个空白页，而回落的代价只是慢几毫秒。
+     * 每一档均为「先按自身规则尝试，失败则回落至默认 HTML5 档」，因为此层失败的表象
+     * 是用户看到空白页，而回落的代价仅为数毫秒延迟。
      */
     internal fun parseDoc(rawHtml: String, baseUri: String, engine: String): Document {
         if (engine != ENGINE_JSOUP) {
             runCatching {
                 return when (engine) {
-                    // lxml 的 XML 模式对等物：不纠错、直接按 XML 建树，实测比 HTML5 快 2~3 倍
+                    // lxml 的 XML 模式对等物：不纠正标签，直接按 XML 建树，实测比 HTML5 快 2~3 倍
                     ENGINE_XML -> Jsoup.parse(rawHtml, baseUri, Parser.xmlParser())
-                    // html5lib 的 JVM 对等物：WHATWG 解析器先把畸形 HTML 修一遍再交给 Jsoup
+                    // html5lib 的 JVM 对等物：WHATWG 解析器先修正畸形 HTML 再交给 Jsoup
                     ENGINE_REPAIR -> Jsoup.parse(repairHtml(rawHtml), baseUri)
                     else -> Jsoup.parse(rawHtml, baseUri)
                 }
-            } /* 失败落到下面的默认档 */
+            } /* 失败回落至下面的默认档 */
         }
         return Jsoup.parse(rawHtml, baseUri)
     }
 
     /**
-     * 解析结果是否「看起来缺东西」——用于 [ENGINE_XML] / [ENGINE_REPAIR] 的静默失败判定。
+     * 判断解析结果是否「缺失内容」，用于 [ENGINE_XML] / [ENGINE_REPAIR] 的静默失败判定。
      *
-     * 只在「原文说这页该有内容」且「解析后什么都选不到」时返回真，
-     * 所以正常页、本来就空的页（issues 列表）都不会被误判成失败。
+     * 仅在「原文预期该页有内容」且「解析后无法选中任何内容」时返回 true，
+     * 因此正常页面、本身即为空的页面（如 issues 列表）不会被误判为失败。
      */
     private fun looksBroken(src: Document, raw: String): Boolean {
-        // 原文里有正文/目录/逐行代码，解析结果里却一个都选不到 → 静默丢节点
+        // 原文中包含正文/目录/逐行代码，解析结果中却无法选中任何一项 → 静默丢失节点
         if (src.selectFirst("article.markdown-body") != null) return false
         if (src.selectFirst("td .react-directory-truncate") != null) return false
         if (src.selectFirst("script[data-target=react-app.embeddedData]") != null) return false
-        // 三种内容形态在原文里一个都没有，那这页本来就没东西可丢，不算失败
+        // 三种内容形态在原文中均不存在，说明该页本身无内容可丢失，不算失败
         val rawExpects = raw.indexOf("markdown-body") >= 0 || RAW_HAS_DIR.containsMatchIn(raw) ||
             raw.contains("rawLines") || raw.contains("<main")
         if (!rawExpects) return false
-        // 到这里说明「原文该有内容、解析后全没了」；连 <main> 都没有就判为建树出的问题
+        // 至此说明「原文预期有内容、解析后全部丢失」；连 <main> 都不存在则判定为建树问题
         return src.selectFirst("main") == null
     }
 
     private val RAW_HAS_DIR = Regex("react-directory-truncate|react-code-tree")
 
     /**
-     * 用 WHATWG 规范解析器（nu.validator.htmlparser，即 html5lib 的 JVM 对等物）把 HTML 修一遍再输出。
+     * 使用 WHATWG 规范解析器（nu.validator.htmlparser，即 html5lib 的 JVM 对等物）修正 HTML 后输出。
      *
-     * 走反射：这个库只有「先修复再解析」这一档用得上，直接 import 会让默认路径也依赖它
-     * （没带 jar 的构建就编不过）。所以做成可选能力——类找不到就抛异常，由 [parseDoc] 回落默认档。
+     * 通过反射调用：此库仅在「先修正再解析」这一档位使用，直接 import 会导致默认路径也依赖它
+     * （未携带 jar 的构建将无法编译）。因此设计为可选能力，类找不到时抛出异常，
+     * 由 [parseDoc] 回落至默认档。
      */
     private fun repairHtml(raw: String): String {
         val sw = java.io.StringWriter()
@@ -361,13 +351,13 @@ object GhView {
     }
 
     /**
-     * 「只解析正文」档：直接在原始字符串里定位 `<article class="markdown-body">` 到它对应的
-     * `</article>`，把这一段切出来交给 Jsoup。
+     * 「仅解析正文」档位：直接在原始字符串中定位 `<article class="markdown-body">` 及其对应的
+     * `</article>`，将该段切出后交给 Jsoup。
      *
-     * 为什么这样最快：整页 330KB 里正文只占 26KB（8%），剩下 92% 是脚本 JSON、导航和样式，
-     * 解析它们纯属浪费（实测整页 11.3ms，只切正文约 1ms）。
-     * 找不到唯一配对（issues 页、目录页，或正文里嵌套了 `<article>`）就返回 null，
-     * 由调用方回落整页解析——所以这一档不会让页面变空白。
+     * 此方式效率最高的原因：整页 330KB 中正文仅占 26KB（8%），其余 92% 为脚本、JSON、导航与样式，
+     * 解析它们纯属浪费（实测整页 11.3ms，仅切正文约 1ms）。
+     * 若无法找到唯一配对（issues 页、目录页，或正文中嵌套了 `<article>`）则返回 null，
+     * 由调用方回落至整页解析，因此此档位不会导致页面空白。
      */
     internal fun articleSlice(raw: String): String? {
         val i = raw.indexOf("markdown-body")
@@ -387,24 +377,35 @@ object GhView {
         return null
     }
 
-    /** 正文切片模式下没有 Document 可查，元信息只能按实测那几条正则从原文取 */
+    // 元信息模式：Document 路径与正文切片路径共用，预编译一次
+    /** 标题中的「owner/repo」前缀，用于顶栏单行显示 */
+    private val RE_TITLE_SLUG = Regex("^[\\w.-]+/[\\w.-]+$")
+    private val RE_OG_DESC = Regex("<meta property=\"og:description\" content=\"([^\"]*)\"")
+    private val RE_META_DESC = Regex("<meta name=\"description\" content=\"([^\"]*)\"")
+    private val RE_TITLE_TAG = Regex("<title[^>]*>([^<]*)</title>")
+    private val RE_STARS = Regex("\"stargazerCount\":(\\d+)")
+    private val RE_FORKS = Regex("\"forksCount\":(\\d+)")
+    private val RE_LANG = Regex("[?&]l=([A-Za-z][A-Za-z0-9%+#. -]{0,30})&")
+    private val RE_REL_TIME = Regex("datetime=\"(\\d{4}-\\d{2}-\\d{2})\"")
+    private val RE_PUSHED_DAY = Regex("\"pushedAt\":\"(\\d{4}-\\d{2}-\\d{2})\"")
+    private val RE_PUSHED_ANY = Regex("\"pushedAt\":\"([^\"]+)\"")
+
+    /** 正文切片模式下无 Document 可查，元信息只能通过正则从原文提取 */
     private fun extractInfoRegex(raw: String): Info {
-        val og = "<meta property=\"og:description\" content=\"([^\"]*)\""
-        val dsc = "<meta name=\"description\" content=\"([^\"]*)\""
-        val desc = (regexFirst(raw, og) ?: regexFirst(raw, dsc)).orEmpty()
+        val desc = (regexFirst(raw, RE_OG_DESC) ?: regexFirst(raw, RE_META_DESC)).orEmpty()
         return Info(
             desc = cleanDesc(Parser.unescapeEntities(desc, false), maxLen = 200),
-            stars = regexFirst(raw, "\"stargazerCount\":(\\d+)").orEmpty(),
-            forks = regexFirst(raw, "\"forksCount\":(\\d+)").orEmpty(),
-            lang = regexFirst(raw, "[?&]l=([A-Za-z][A-Za-z0-9%+#. -]{0,30})&").orEmpty()
+            stars = regexFirst(raw, RE_STARS).orEmpty(),
+            forks = regexFirst(raw, RE_FORKS).orEmpty(),
+            lang = regexFirst(raw, RE_LANG).orEmpty()
                 .let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) },
-            updated = (regexFirst(raw, "datetime=\"(\\d{4}-\\d{2}-\\d{2})\"")
-                ?: regexFirst(raw, "\"pushedAt\":\"(\\d{4}-\\d{2}-\\d{2})\"")
-                ?: regexFirst(raw, "\"pushedAt\":\"([^\"]+)\"")?.take(10)).orEmpty()
+            updated = (regexFirst(raw, RE_REL_TIME)
+                ?: regexFirst(raw, RE_PUSHED_DAY)
+                ?: regexFirst(raw, RE_PUSHED_ANY)?.take(10)).orEmpty()
         )
     }
 
-    /** 一页抓完后的结果；[html] 是可直接本地加载的完整文档 */
+    /** 一次 fetch 的结果；[html] 为可直接本地加载的完整页面 */
     data class Page(
         val logicalUrl: String,
         val html: String,
@@ -416,11 +417,11 @@ object GhView {
     /**
      * 原始 HTML 的小容量内存缓存。
      *
-     * 为什么需要：在「设置 → 浏览」里换解析引擎 / 图片方式时，用户想看的
-     * 是**同一份内容换一种处理办法**，而不是再去网上拿一次。
-     * 没有这一层的话，四档引擎逐个试一遍 = 同一个页面联网抓四遍，
-     * 既慢又容易被镜像站按 IP 限流（用户反馈里就提过这条）。
-     * 只留 [RAW_CACHE_SIZE] 页：一页原始 HTML 300~700KB，再多就是白占内存。
+     * 存在原因：在「设置 → 浏览」中切换解析引擎 / 图片方式时，用户期望的是
+     * **同一份内容换一种处理方式**，而非重新从网络 fetch。
+     * 若无此缓存，四档引擎逐个尝试 = 同一页面联网 fetch 四次，
+     * 既耗时又易被镜像站按 IP 限流。
+     * 仅保留 [RAW_CACHE_SIZE] 页：单页原始 HTML 约 300~700KB，更多则浪费内存。
      */
     private val rawCache = object : LinkedHashMap<String, RawHit>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<String, RawHit>?) = size > RAW_CACHE_SIZE
@@ -428,62 +429,62 @@ object GhView {
 
     private const val RAW_CACHE_SIZE = 3
 
-    /** 一次抓取的结果（原始 HTML + 它来自哪条通道），命中缓存时要连带这些一起复用 */
+    /** 一次 fetch 的结果（原始 HTML 及其来源通道），命中缓存时需连带复用 */
     internal class RawHit(val rawHtml: String, val fromMirror: Boolean, val fetchMs: Long)
 
-    /** 缓存键必须包含「会改变取哪份网络内容」的那几项：地址 + 加速开关 + 抓取器 */
+    /** 缓存键必须包含「会影响 fetch 哪份网络内容」的字段：地址 + 加速开关 + fetch 器 */
     internal fun rawCacheKey(logicalUrl: String): String =
         logicalUrl + "|" + AppState.browseAccelOn + "|" + AppState.fetcher
 
-    /** 测试与界面销毁时用：清掉原始 HTML 缓存，别把几百 KB 留在内存里 */
+    /** 测试与界面销毁时使用：清除原始 HTML 缓存，避免数百 KB 数据滞留内存 */
     fun clearRawCache() = synchronized(rawCache) { rawCache.clear() }
 
-    /** 单测用：往页面缓存里塞一条，好验证「命中缓存时一次网络都不发」 */
+    /** 单测使用：向页面缓存中注入一条记录，验证「命中缓存时不发起任何网络请求」 */
     internal fun primeRawCacheForTest(logicalUrl: String, raw: String, fromMirror: Boolean) =
         synchronized(rawCache) { rawCache[rawCacheKey(logicalUrl)] = RawHit(raw, fromMirror, 1200) }
 
     /**
-     * 生成页面的配色。这里**不靠** CSS 的 prefers-color-scheme：那个只看**系统**设置，
-     * 而本 App 在「设置 → 外观」里可以强制浅色/深色，两边会不一致（App 深色、页面浅色）。
-     * 所以由界面把当前的深色判断传进来，直接把对应两套变量写进生成的 HTML。
+     * 生成页面的配色方案。此处**不依赖** CSS 的 prefers-color-scheme：该媒体查询仅检测**系统**设置，
+     * 而本 App 在「设置 → 外观」中可强制浅色/深色，两者可能不一致（App 深色、页面浅色）。
+     * 因此由界面将当前深色判断传入，直接将对应两套变量写入生成的 HTML。
      */
     const val LIGHT_CSS = "--fg:#1f2328;--muted:#59636e;--bg:#ffffff;--card:#f6f8fa;--line:#d1d9e0;--link:#0969da"
     const val DARK_CSS = "--fg:#e6edf3;--muted:#9198a1;--bg:#0d1117;--card:#151b23;--line:#3d444d;--link:#4493f8"
 
-    /** 逻辑地址（用户眼里那个 github.com 地址）→ 实际去抓的地址列表（internal 供单测验证两档开关） */
+    /** 逻辑地址（用户所见的 github.com 地址）→ 实际 fetch 地址列表（internal 供单测验证两档开关） */
     internal fun candidates(logicalUrl: String): List<String> {
         val u = runCatching { URL(logicalUrl) }.getOrNull() ?: return listOf(logicalUrl)
         if (u.host != "github.com" && u.host != "www.github.com") return listOf(logicalUrl)
         val path = u.path + (if (u.query.isNullOrBlank()) "" else "?${u.query}")
-        // 浏览加速开着：先试镜像（国内可达），失败再直连官方
-        // 关着：只走直连官方（由 Net.browse 的 DoH + 真实 IP 优选负责绕 DNS 污染）
-        // 注意用的是 browseAccelOn —— 下载那套文件前缀代理不了网页，两档必须分开。
+        // 浏览加速开启：先尝试镜像（国内可达），失败后直连官方
+        // 浏览加速关闭：仅直连官方（由 Net.browse 的 DoH + 真实 IP 优选负责绕过 DNS 污染）
+        // 注意使用 browseAccelOn，下载加速前缀无法代理网页，两档必须分开，理由见类注释。
         val mirrors = if (AppState.browseAccelOn) pageMirrors.map { "$it$path" } else emptyList()
         return mirrors + listOf("https://github.com$path")
     }
 
     /**
-     * 抓取并渲染一页。**必须在后台线程调用**（内部是同步 HTTP，还会逐张取图）。
-     * 所有候选都失败时抛异常，由调用方转成界面提示。
+     * fetch 并渲染一页。**必须在后台线程调用**（内部为同步 HTTP，还会逐张 fetch 图片）。
+     * 所有候选地址均失败时抛出异常，由调用方转换为界面提示。
      */
     fun fetch(logicalUrl: String, dark: Boolean = false): Page =
         fetchCached(logicalUrl, dark, force = false)
 
-    /** 顶栏「刷新」用：跳过页面缓存，真去网上重新拿一次 */
+    /** 顶栏「刷新」使用：跳过页面缓存，重新从网络 fetch */
     fun fetchFresh(logicalUrl: String, dark: Boolean = false): Page =
         fetchCached(logicalUrl, dark, force = true)
 
     /**
-     * 掐断在途的一切：子进程 + OkHttp 请求。界面销毁时调用（见
+     * 终止所有在途操作：子进程 + OkHttp 请求。界面销毁时调用（见
      * [com.gh.dl.ui.BrowseViewModel.onCleared]）。
-     * 图片那边靠 [Fetcher.cancelAll] 之外还有一层：WebView 销毁以后不会再发请求，
-     * 所以取图线程自然就没有新任务了。
+     * 图片侧除 [Fetcher.cancelAll] 外还有一层保障：WebView 销毁后不再发起请求，
+     * 因此取图线程自然不会再收到新任务。
      */
     fun cancelInFlight() {
         Fetcher.cancelAll()
     }
 
-    /** [force] 为真时跳过 [rawCache]（顶栏「刷新」就是要重新拿一次） */
+    /** [force] 为 true 时跳过 [rawCache]（顶栏「刷新」即为重新 fetch） */
     internal fun fetchCached(logicalUrl: String, dark: Boolean, force: Boolean): Page {
         val ck = rawCacheKey(logicalUrl)
         if (!force) {
@@ -492,70 +493,70 @@ object GhView {
                 val via = if (hit.fromMirror) "经镜像加速" else "直连 GitHub"
                 val r0 = System.currentTimeMillis()
                 val page = render(logicalUrl, hit.rawHtml, via, hit.fromMirror, dark)
-                // 说清楚这一次没有联网：这是用户唯一能看出「换引擎只是重新处理、
-                // 并没有再去下载一遍」的地方，含糊不得
+                // 明确标注此次未联网：这是用户唯一能判断「切换引擎仅为重新处理、
+                // 并未重新下载」的依据，表述必须清晰
                 return page.copy(note = "$via · 复用页面缓存 + 渲染 ${fmtSec(System.currentTimeMillis() - r0)}")
             }
         }
         var lastErr: Exception? = null
         var fromMirror = false
         val t0 = System.currentTimeMillis()
-        // 顺手补一次 github.com 的真实 IP 优选（异步、自带去重）：
-        // Net.browse 的 DNS 覆盖只在「已经探到 IP」时才有效，直连那条候选能不能通就取决于它。
-        // 本次请求赶不上（探测还在后台跑），但用户的下一次抓取/刷新就能用上。
+        // 顺便触发一次 github.com 的真实 IP 优选（异步、自带去重）：
+        // Net.browse 的 DNS 覆盖仅在「已探测到 IP」时生效，直连候选能否连通取决于此。
+        // 本次请求可能无法利用（探测仍在后台进行），但用户的下一次 fetch/刷新即可使用。
         Net.pinInBackground("github.com")
         for (target in candidates(logicalUrl)) {
             try {
-                // 先按用户选的抓取器试（curl / wget），没走通再用内置 OkHttp。
-                // 顺序是这样而不是「只按选择」：外部工具失败的原因五花八门（机型没带 curl、
-                // 被 SELinux 拦、超时），而浏览失败等于整个功能不可用，必须兜住。
+                // 先按用户选择的 fetch 器尝试（curl / wget），失败后使用内置 OkHttp。
+                // 顺序如此而非「仅按选择」的原因：外部工具失败原因多样（机型未安装 curl、
+                // 被 SELinux 拦截、超时），而浏览失败意味着整个功能不可用，必须有后备方案。
                 val got = Fetcher.fetch(target) ?: Fetcher.okhttp(target)
-                    ?: throw IllegalStateException("抓取失败（${hostOf(target)}）")
+                    ?: throw IllegalStateException("fetch 失败（${hostOf(target)}）")
                 if (got.status !in 200..299) {
-                    // 403 多半是 UA 被拦；其余状态码原样带进提示
+                    // 403 多为 UA 被拦截；其余状态码原样带入提示
                     lastErr = IllegalStateException("HTTP ${got.status}（${hostOf(target)}）")
                     continue
                 }
                 if (got.body.isBlank()) throw IllegalStateException("空响应")
                 fromMirror = hostOf(target) != hostOf(logicalUrl)
                 val fetchMs = System.currentTimeMillis() - t0
-                // 只写「经镜像加速」，不写域名：界面里的地址与标签统一只出现官方域，
-                // 免得用户以为自己在浏览镜像站（实测过一次误认，很难解释）
+                // 仅标注「经镜像加速」，不显示域名：界面中的地址与标签统一仅出现官方域名，
+                // 避免用户误认为自己在浏览镜像站（曾出现一次误认，解释成本较高）
                 val via = if (fromMirror) "经镜像加速" else "直连 GitHub"
                 synchronized(rawCache) {
                     rawCache[ck] = RawHit(got.body, fromMirror, fetchMs)
                 }
                 val page = render(logicalUrl, got.body, via, fromMirror, dark)
-                // 把「抓取多久 / 渲染多久」如实标到页脚标签上：这一轮的性能改动没有实测数字
-                // 就说不清，用户也不该靠猜来判断自己该选哪个引擎、哪个抓取器。
+                // 将「fetch 耗时 / 渲染耗时」如实标注在页脚标签：性能改动若无实测数据
+                // 则无法评估，用户也不应靠猜测判断应选择哪个引擎、哪个 fetch 器。
                 val renderMs = System.currentTimeMillis() - t0 - fetchMs
-                // 响应体触到上限时正文是被我们主动截的，必须在页面上说清楚，
-                // 否则用户会把「后面没有内容」当成仓库本身就是这样
+                // 响应体触及上限时正文为主动截断，必须在页面上明确说明，
+                // 否则用户会误认为「后续无内容」是仓库本身的状态
                 val tail = if (got.truncated)
-                    " · 注意：响应已达 ${MAX_RESPONSE_MB}MB 上限，后面的内容未抓取" else ""
+                    " · 注意：响应已达 ${MAX_RESPONSE_MB}MB 上限，后续内容未 fetch" else ""
                 return Page(page.logicalUrl, page.html, page.title,
-                    "$via · 取 ${fmtSec(fetchMs)} + 渲染 ${fmtSec(renderMs)}$tail",
+                    "$via · fetch ${fmtSec(fetchMs)} + 渲染 ${fmtSec(renderMs)}$tail",
                     truncated = got.truncated || page.truncated)
             } catch (e: Exception) {
                 lastErr = e
             }
         }
-        throw lastErr ?: IllegalStateException("无法抓取页面")
+        throw lastErr ?: IllegalStateException("无法 fetch 页面")
     }
 
     private fun hostOf(url: String): String = runCatching { URL(url).host }.getOrDefault(url)
 
-    /** 毫秒转「1.7s」这种一位小数的写法（页脚标签要短，不能写 1697ms 那么长） */
+    /** 毫秒转「1.7s」格式的一位小数写法（页脚标签需简短，不能写 1697ms） */
     private fun fmtSec(ms: Long): String =
         if (ms < 1000) "${ms}ms" else "%.1fs".format(ms / 1000.0)
 
     /**
-     * 把抓来的整页 HTML 变成我们自己的一页。
+     * 将 fetch 的整页 HTML 转换为本地渲染页面。
      *
-     * 取材顺序（按「最省流量」排）：README 正文 → 源码逐行 → 目录文件列表 → 兜底整块 `<main>`。
-     * 链接一律折算成 github.com 的**逻辑地址**，界面里永远不出现镜像域名；
-     * 点击由 [com.gh.dl.ui.BrowseTab] 拦下后再走一次 [fetch]，形成闭环。
-     * 图片由我们自己取回并转 base64 内联，所以生成的页面零外部请求。
+     * 取材顺序（按「最省流量」排列）：README 正文 → 源码逐行 → 目录文件列表 → 回退整块 `<main>`。
+     * 链接统一折算为 github.com 的**逻辑地址**，界面中永不出现镜像域名；
+     * 点击由 [com.gh.dl.ui.BrowseTab] 拦截后再走一次 [fetch]，形成闭环。
+     * 图片由本地 fetch 并转 base64 内联，因此生成的页面零外部请求。
      */
     internal fun render(
         logicalUrl: String,
@@ -567,22 +568,22 @@ object GhView {
     ): Page {
         val engine = engineOverride
             ?: runCatching { AppState.parseEngine }.getOrDefault(ENGINE_JSOUP)
-        // 先试「只解析正文」：定位成功就省掉 90% 的建树量；定位失败（目录页 / issues 页）再整页解析
+        // 先尝试「仅解析正文」：定位成功可省去 90% 的建树量；定位失败（目录页 / issues 页）再整页解析
         val slice = if (engine == ENGINE_FAST) articleSlice(rawHtml) else null
         var src = if (slice != null) Jsoup.parseBodyFragment(slice, logicalUrl)
                   else parseDoc(rawHtml, logicalUrl, engine)
-        // **静默失败兜底**（用户点名的这一条确实成立）：非默认档的失败不一定抛异常。
-        // XML 档遇到 GitHub 页面里大量未闭合标签 / 自闭合标签时，可能「解析成功但节点丢了」，
-        // 于是回落逻辑根本不触发，用户看到的是半截页面。
-        // 判据不靠猜：原文里明明有 markdown-body / 目录标记，解析结果里却一个都选不到，
-        // 那就是建树出了问题的信号，改用默认档重解析一次。
+        // **静默失败回落**：非默认档位的失败不一定抛出异常。
+        // XML 档位遇到 GitHub 页面中大量未闭合标签 / 自闭合标签时，可能「解析成功但丢失节点」，
+        // 此时回落逻辑无法触发，用户看到的是不完整页面。
+        // 判据：原文中存在 markdown-body / 目录标记，解析结果中却无法选中任何一项，
+        // 即为建树异常的信号，改用默认档重新解析。
         if (engine != ENGINE_JSOUP && slice == null && looksBroken(src, rawHtml)) {
             src = parseDoc(rawHtml, logicalUrl, ENGINE_JSOUP)
         }
         val info = if (slice != null) extractInfoRegex(rawHtml) else extractInfo(rawHtml, src)
         val body = Element("div")
-        // README 正文里的 "blob/master/x.py"、"images/a.png" 是相对**仓库根**解析的；
-        // 当前页可能是 /owner/repo/tree/master/dir，直接按页面 URL 拼会算错一层
+        // README 正文中的 "blob/master/x.py"、"images/a.png" 是相对**仓库根**解析的；
+        // 当前页可能为 /owner/repo/tree/master/dir，直接按页面 URL 拼接会多出一层
         val repoBase = repoRoot(logicalUrl)
         val pageBase = "https://github.com" + (runCatching { URL(logicalUrl).path }.getOrDefault("/"))
 
@@ -595,7 +596,7 @@ object GhView {
             rewriteLinks(readme, repoBase)
             body.appendChild(readme.clone())
         } else if (code.isNotBlank()) {
-            // 源码页：HTML 里那个 <pre> 只是占位，逐行内容在同页 JSON 的 rawLines 里
+            // 源码页：HTML 中的 <pre> 仅为占位，逐行内容位于同页 JSON 的 rawLines 中
             body.append("<pre class=\"code\">").append(code).append("</pre>")
         } else if (dir.isNotBlank()) {
             body.append(dir)
@@ -607,27 +608,27 @@ object GhView {
             body.appendChild(main.clone())
         }
 
-        // 先按**元素**截断再取 HTML：图片是 base64 内联的，
-        // 直接对字符串 substring 会切进 data: URI 中间，留下半张破图 + 一句截断提示
-        // （实测 YunX 那种截图很多的 README 就是这个现象）。
+        // 先按**元素**截断再取 HTML：图片为 base64 内联，
+        // 直接对字符串 substring 会切进 data: URI 中间，留下半张损坏图片与一句截断提示
+        // （实测 YunX 等截图较多的 README 即出现此现象）。
         val truncated = truncateToBudget(body, MAX_BODY_CHARS, 0)
         if (truncated) {
-            body.append("<p class=\"trunc\">（内容过长，后面部分未显示；完整内容请用顶栏「在浏览器打开」）</p>")
+            body.append("<p class=\"trunc\">（内容过长，后续部分未显示；完整内容请使用顶栏「在浏览器打开」）</p>")
         }
         val inner = limit(Sanitize.html(body.html()), MAX_BODY_CHARS)
         val title = cleanTitle(
-            src.title().ifBlank { regexFirst(rawHtml, "<title[^>]*>([^<]*)</title>") ?: "" }
+            src.title().ifBlank { regexFirst(rawHtml, RE_TITLE_TAG) ?: "" }
         )
-        // [truncated] 要如实传出去：正文按元素丢弃也是一种「内容不完整」，
-        // 让上层能在提示里统一表达，而不是只有「响应超限」那一种被标出来
-        return Page(logicalUrl, page(title, note, logicalUrl, info, inner, dark), title, note, truncated)
+        // [truncated] 需如实传出：正文按元素丢弃也属于「内容不完整」，
+        // 使上层能在提示中统一表达，而非仅标注「响应超限」一种情况
+        return Page(logicalUrl, page(title, logicalUrl, info, inner, dark), title, note, truncated)
     }
 
     /**
-     * 仓库根地址 https://github.com/owner[/repo]：README 里 "docs/x.png"、"blob/main/x.py"
-     * 这类相对写法一律相对**仓库根**，所以基准不含 tree/分支 那段。
-     * （实测：GitHub 渲染 README 时本来就会把相对路径改写成绝对地址，走到这里的相对写法
-     *  只剩作者手写的少数几种，按仓库根解析是唯一说得通的口径。）
+     * 仓库根地址 https://github.com/owner[/repo]：README 中 "docs/x.png"、"blob/main/x.py"
+     * 等相对路径均相对**仓库根**解析，因此基准不含 tree/分支段。
+     * （实测：GitHub 渲染 README 时会将相对路径改写为绝对地址，到达此处的相对写法
+     *  仅剩作者手写的少数几种，按仓库根解析是唯一合理的标准。）
      * 个人主页（/owner）与 github.com 根页依次降级；非 github.com 地址原样返回。
      */
     internal fun repoRoot(logicalUrl: String): String {
@@ -643,7 +644,7 @@ object GhView {
         }
     }
 
-    /** 页面元信息（标题下方那排小标签）；镜像与官方 HTML 里这些字段位置一致 */
+    /** 页面元信息（标题下方标签排）；镜像与官方 HTML 中这些字段位置一致 */
     internal class Info(
         val desc: String,
         val stars: String,
@@ -657,17 +658,17 @@ object GhView {
             src.selectFirst("meta[property=og:description]")?.attr("content"),
             src.selectFirst("meta[name=description]")?.attr("content")
         ).orEmpty()
-        // 最近推送时间：新版页面是 <relative-time datetime="2024-..-..T..">，旧版是 JSON 里的 pushedAt
-        val updated = (regexFirst(raw, """datetime="(\d{4}-\d{2}-\d{2})""")
-            ?: regexFirst(raw, """"pushedAt":"(\d{4}-\d{2}-\d{2})""")
-            ?: regexFirst(raw, """"pushedAt":"([^"]+)""")?.take(10)).orEmpty()
+        // 最近推送时间：新版页面为 <relative-time datetime="2024-..-..T..">，旧版为 JSON 中的 pushedAt
+        val updated = (regexFirst(raw, RE_REL_TIME)
+            ?: regexFirst(raw, RE_PUSHED_DAY)
+            ?: regexFirst(raw, RE_PUSHED_ANY)?.take(10)).orEmpty()
         // 主语言：仓库页侧栏第一个语言筛选链接（?l=TypeScript）
-        val lang = regexFirst(raw, """[?&]l=([A-Za-z][A-Za-z0-9%+#. -]{0,30})&""").orEmpty()
+        val lang = regexFirst(raw, RE_LANG).orEmpty()
             .let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
         return Info(
             desc = cleanDesc(desc, maxLen = 200),
-            stars = regexFirst(raw, """"stargazerCount":(\d+)""").orEmpty(),
-            forks = regexFirst(raw, """"forksCount":(\d+)""").orEmpty(),
+            stars = regexFirst(raw, RE_STARS).orEmpty(),
+            forks = regexFirst(raw, RE_FORKS).orEmpty(),
             lang = lang,
             updated = updated
         )
@@ -676,29 +677,37 @@ object GhView {
     private fun firstNonBlank(vararg vals: String?): String? =
         vals.firstOrNull { !it.isNullOrBlank() }
 
-    private fun regexFirst(text: String, pattern: String): String? =
-        runCatching { Regex(pattern).find(text)?.groupValues?.getOrNull(1) }.getOrNull()
+    private fun regexFirst(text: String, re: Regex): String? =
+        re.find(text)?.groupValues?.getOrNull(1)
 
     private fun cleanTitle(t: String): String {
         val s = t.removePrefix("GitHub - ").removeSuffix(" · GitHub").trim()
-        return if (s.isBlank()) "GitHub" else s
+        if (s.isBlank()) return "GitHub"
+        // 形如「owner/repo: 项目描述」：顶栏标题为单行，描述在正文中已有，
+        // 保留整串会挤占顶栏并换行截断
+        val i = s.indexOf(": ")
+        if (i > 0) {
+            val head = s.substring(0, i).trim()
+            if (head.matches(RE_TITLE_SLUG)) return head
+        }
+        return s
     }
 
-    /** 这些块在纯静态渲染下毫无意义，还占一大屏：脚本、样式、提示条、按钮、懒加载占位等 */
+    /** 以下块在纯静态渲染下无意义且占用大量空间：脚本、样式、提示条、按钮、懒加载占位等 */
     private fun cleanJunk(root: Element) {
         root.select("script, style, noscript, template, dialog, include-fragment, g-emoji, task-lists-element")
             .remove()
         root.select("[data-hydro-click], .flash, .js-notice, .Header, .site-search, .jump-to-suggestions-container")
             .remove()
         root.select("button, [role=button], input[type=submit]").remove()
-        // 折叠块里的 <pre> 带着 GitHub 自己的 style="max-height:24.9em" 和「显示全部」遮罩；
-        // 我们页面里没有那个按钮，会让用户以为内容被吞了，所以清掉内联高度限制
+        // 折叠块中的 <pre> 携带 GitHub 自身的 style="max-height:24.9em" 与「显示全部」遮罩；
+        // 本应用页面中无对应按钮，会导致用户误认为内容缺失，因此清除内联高度限制
         root.select("pre, div, span").removeAttr("style")
-        // 锚点链接（#readme-...）在我们页面里多半没有对应位置，点了没反应，直接去掉
+        // 锚点链接（#readme-...）在本应用页面中多半无对应位置，点击无响应，直接移除
         root.select("a[href^=#]").remove()
     }
 
-    /** 链接绝对化并折算回 github.com；mailto 保留，锚点已由 [cleanJunk] 清掉 */
+    /** 链接绝对化并折算回 github.com；mailto 保留，锚点已由 [cleanJunk] 移除 */
     private fun rewriteLinks(root: Element, baseUrl: String) {
         for (a in root.select("a[href]")) {
             val logical = resolveRef(a.attr("href").trim(), baseUrl)
@@ -708,10 +717,10 @@ object GhView {
     }
 
     /**
-     * 把 href / src 写成「逻辑地址」（始终指向 github.com 官方）。
+     * 将 href / src 写为「逻辑地址」（始终指向 github.com 官方）。
      *
-     * 页面里三种写法都有：`/owner/repo`（站内绝对）、`blob/master/x.py`（README 相对仓库根）、
-     * `https://githubfast.com/...`（镜像绝对，折算回官方）。
+     * 页面中存在三种写法：`/owner/repo`（站内绝对路径）、`blob/master/x.py`（README 相对仓库根）、
+     * `https://githubfast.com/...`（镜像绝对路径，折算回官方）。
      * 邮箱等非 http 链接原样返回，由调用方决定去留。
      */
     internal fun resolveRef(href: String, baseUrl: String): String? {
@@ -720,22 +729,22 @@ object GhView {
         if (h.startsWith("#")) return h
         if (h.startsWith("mailto:")) return h
         if (h.startsWith("http://") || h.startsWith("https://")) return scrubNested(toLogical(h))
-        // 其他带协议的写法（javascript: / data: / vbscript: / file: / intent: …）一律不要：
-        // 它们在本地页里没有意义，留着反而是可被利用的入口。
-        // 注意用 containsMatchIn 而不是 matches——后者要求整串匹配，
-        // 「javascript:alert(2)」这种带括号引号的就会漏过（真漏过一次，单测逮住的）。
+        // 其他带协议的写法（javascript: / data: / vbscript: / file: / intent: …）一律拒绝：
+        // 它们在本地页面无意义，保留反而构成可利用入口。
+        // 注意使用 containsMatchIn 而非 matches，后者要求整串匹配，
+        // 「javascript:alert(2)」等带括号引号的写法会漏过（单测曾捕获此问题）。
         if (SCHEME_IN_PREFIX.containsMatchIn(h)) return null
-        // 站内绝对：github.com 是唯一入口（[Accel] 那套下载前缀不参与浏览，见类注释）
+        // 站内绝对路径：github.com 为唯一入口（[Accel] 的下载加速前缀不参与浏览，理由见类注释）
         val abs = if (h.startsWith("/")) "https://github.com$h"
                   else baseUrl.trimEnd('/') + "/" + h
         return toLogical(abs)
     }
 
     /**
-     * 外站链接里**嵌**着的镜像地址也要折回官方（实测样例：README 里有个
+     * 外站链接中**嵌入**的镜像地址也需折回官方（实测样例：README 中存在
      * `https://vscode.dev/redirect?url=...url=https://githubfast.com/microsoft/vscode`）。
-     * 只折「明确的 https://githubfast.com/」这一种写法，不去猜别的，避免把
-     * 真是那个字符串的正文改坏。
+     * 仅折算「明确的 https://githubfast.com/」写法，不做推测，避免将
+     * 正文中真实出现的该字符串误改。
      */
     private fun scrubNested(url: String): String =
         if (!url.contains("githubfast.com")) url
@@ -744,7 +753,7 @@ object GhView {
             acc.replace("https://$mh/", "https://github.com/").replace("http://$mh/", "https://github.com/")
         }
 
-    /** 目录页 / 文件列表：抽出条目名与链接排成列表，比原样塞入 `<main>` 干净得多 */
+    /** 目录页 / 文件列表：提取条目名与链接排列成列表，比原样塞入 `<main>` 更清晰 */
     private fun dirList(src: Document): String {
         val links = src.select("td .react-directory-truncate a")
         if (links.isEmpty()) return ""
@@ -756,7 +765,7 @@ object GhView {
             if (name.isEmpty()) continue
             val href = resolveRef(a.attr("href").trim(), base) ?: continue
             if (!href.startsWith("https://")) continue
-            // 真实页面里每个条目有两张 <a>（图标一个、名字一个），按地址去重才不会一屏重复项
+            // 真实页面中每个条目有两张 <a>（图标一张、名字一张），按地址去重避免重复项
             if (!seen.add(href)) continue
             val dir = a.attr("aria-label").contains("Directory")
             sb.append("<li><a href=\"").append(escAttr(href)).append("\">")
@@ -767,9 +776,9 @@ object GhView {
 
     /**
      * 源码 / 文本文件页的正文。
-     * GitHub 把逐行内容放在 `<script type="application/json" data-target="react-app.embeddedData">`
-     * 里的 rawLines 数组（镜像与官方结构一致）。取不到（二进制、超大、结构变化）返回空串，
-     * 由调用方转用别的取材方式。
+     * GitHub 将逐行内容置于 `<script type="application/json" data-target="react-app.embeddedData">`
+     * 中的 rawLines 数组（镜像与官方结构一致）。无法获取时（二进制、超大、结构变化）返回空串，
+     * 由调用方改用其他取材方式。
      */
     private fun codeBlob(src: Document): String {
         val json = src.select("script[data-target=\"react-app.embeddedData\"]")
@@ -786,7 +795,7 @@ object GhView {
         }.getOrDefault("")
     }
 
-    /** 在整棵 JSON 树里找 rawLines：它挂在带点号的分区键下，层数不固定，所以递归 */
+    /** 在整棵 JSON 树中查找 rawLines：其挂载于带点号的分区键下，层数不固定，因此递归 */
     private fun collectRawLines(o: JSONObject, out: ArrayList<String>): Boolean {
         for (k in o.keys()) {
             val v = o.opt(k)
@@ -800,11 +809,11 @@ object GhView {
     }
 
     /**
-     * 镜像地址一律折算回官方地址，界面里只出现官方域名：
+     * 镜像地址统一折算回官方地址，界面中仅出现官方域名：
      *  - githubfast.com → github.com
      *  - assets.githubfast.com → github.githubassets.com（页面静态资源）
      *  - usercontent.githubfast.com → 该路径对应的官方资产域（见 [usercontentLogical]）
-     *  - external.githubfast.com/https/<host><path> → https://<host><path>（镜像的通用外站通道）
+     *  - external.githubfast.com/https/<host><path> → https://<host><path>（镜像的通用外站转发）
      * 非镜像地址原样返回。
      */
     internal fun toLogical(abs: String): String {
@@ -824,13 +833,13 @@ object GhView {
     }
 
     /**
-     * 镜像的 usercontent 地址 → 官方地址。它把「原域名首段」写进了路径里，所以要连路径一起换算
+     * 镜像的 usercontent 地址 → 官方地址。镜像将「原域名首段」写入路径，因此需连路径一起换算
      * （以下映射为实测结果）：
      *  - `/avatars/u/905434`   → avatars.githubusercontent.com/u/905434
-     *  - `/camo/<hash>/<hex>`  → camo.githubusercontent.com/<hash>/<hex>（README 里的外站徽标）
+     *  - `/camo/<hash>/<hex>`  → camo.githubusercontent.com/<hash>/<hex>（README 中的外站徽标）
      *  - `/private-user-images/<id>/<file>?jwt=…` → private-user-images.githubusercontent.com/…
      *  - `/assets/...`、`/i/...` → github.githubassets.com/...
-     * 认出来的那一段要**去掉**，否则会拼出一个官方没有的多一层路径。
+     * 识别出的首段需**去除**，否则会拼出官方不存在的多余路径层。
      */
     private fun usercontentLogical(u: URL): String {
         val path = u.path + (if (u.query.isNullOrBlank()) "" else "?${u.query}")
@@ -842,18 +851,18 @@ object GhView {
             "private-user-images", "user-images" ->
                 "https://private-user-images.githubusercontent.com" + strip()
             "assets", "i" -> "https://github.githubassets.com" + strip()
-            // 未知首段：多半是仓库里的图片（镜像也按原路径代理），留在 github.com 最安全
+            // 未知首段：多为仓库内图片（镜像也按原路径代理），保留 github.com 最安全
             else -> "https://github.com$path"
         }
     }
 
     /**
-     * 取图的备用通道：官方地址 → 镜像地址（本页是镜像抓来的才用，见 [inlineImages]）。
-     * 认不出规律的地址返回 null。
+     * 取图的备用通道：官方地址 → 镜像地址（仅当本页由镜像 fetch 时使用，见 [inlineImages]）。
+     * 无法识别规律的地址返回 null。
      *
-     * 实测对应关系：镜像把 GitHub 各资产域写在自己 usercontent 子域的**首段路径**里
+     * 实测对应关系：镜像将 GitHub 各资产域写入自身 usercontent 子域的**首段路径**
      * （`avatars.githubusercontent.com/u/6154722` → `usercontent.githubfast.com/avatars/u/6154722`），
-     * 所以这里按 [usercontentLogical] 的逆运算补回首段。
+     * 因此此处按 [usercontentLogical] 的逆运算补回首段。
      */
     internal fun mirrorOf(url: String): String? {
         val u = runCatching { URL(url) }.getOrNull() ?: return null
@@ -862,7 +871,7 @@ object GhView {
         val path = u.path + (if (u.query.isNullOrBlank()) "" else "?${u.query}")
         return when (u.host) {
             "github.com" -> "$mirror$path"
-            // raw 文件的镜像写法是 /owner/repo/raw/<ref>/<file>（实测 302→200 可取）
+            // raw 文件的镜像写法为 /owner/repo/raw/<ref>/<file>（实测 302→200 可取）
             "raw.githubusercontent.com" -> {
                 val segs = u.path.trim('/').split('/')
                 if (segs.size >= 3) "$mirror/${segs[0]}/${segs[1]}/raw/" + segs.drop(2).joinToString("/") +
@@ -878,34 +887,34 @@ object GhView {
     }
 
     /**
-     * 取回图片并转 data: 内联，让本地页面彻底不发起网络请求。
-     * 取不到、不是图片、或超出大小/数量上限时**删掉** <img>，
-     * 绝不留一个会触发外部请求的地址（那等于把 WebView 又变成联网的）。
+     * fetch 图片并转为 data: 内联，使本地页面完全不发起网络请求。
+     * 无法获取、非图片、或超出大小/数量上限时**删除** <img>，
+     * 不留任何会触发外部请求的地址（否则等同于使 WebView 恢复联网状态）。
      *
-     * 候选顺序：先按页面来源那条通道走（镜像来的页面，图片地址本来就是镜像的，最可能一次成功），
-     * 再试官方地址，最后试由官方地址反推出来的镜像地址。
+     * 候选顺序：先按页面来源通道尝试（镜像 fetch 的页面，图片地址本即为镜像地址，最可能一次成功），
+     * 再尝试官方地址，最后尝试由官方地址反推的镜像地址。
      */
     private fun inlineImages(root: Element, baseUrl: String, fromMirror: Boolean) {
         val imgs = root.select("img[src]").toList()
         if (imgs.isEmpty()) return
 
         when (AppState.imageMode) {
-            // 完全不取图：README 里那些徽标 / 截图一律删掉，最省流量
+            // 完全不取图：README 中的徽标 / 截图一律删除，最省流量
             IMAGE_OFF -> { imgs.forEach { it.remove() }; return }
-            // 本地缓存（默认）：HTML 里只留一个短虚拟地址，字节由 WebView 找我们要
+            // 本地缓存（默认）：HTML 中仅保留短虚拟地址，字节由 WebView 回调获取
             IMAGE_BASE64 -> inlineAsBase64(root, imgs, baseUrl, fromMirror)
             else -> inlineAsLocalUrl(imgs, baseUrl, fromMirror)
         }
     }
 
     /**
-     * 默认方案：`<img src>` 换成 `https://ghimg.local/<hash>`，字节不进 HTML。
+     * 默认方案：`<img src>` 替换为 `https://ghimg.local/<hash>`，字节不进入 HTML。
      *
-     * 这个域名不存在，[com.gh.dl.ui.BrowseTab] 的 shouldInterceptRequest 会把它拦下来
-     * 交回 [loadImage]，所以页面依旧零外部请求，但：
-     *  - 正文不会被 1MB 级的 base64 挤掉（这正是「内容过长」提示的根因）；
-     *  - 渲染阶段一张图都不取，首屏只要主文档的时间；
-     *  - 取到的图落盘，下次同一页直接读缓存。
+     * 此域名不存在，[com.gh.dl.ui.BrowseTab] 的 shouldInterceptRequest 会将其拦截
+     * 交回 [loadImage]，因此页面依旧零外部请求，但：
+     *  - 正文不会被 MB 级 base64 挤占（这正是「内容过长」提示的根本原因）；
+     *  - 渲染阶段不 fetch 任何图片，首屏仅需主文档耗时；
+     *  - 已 fetch 图片落盘缓存，下次访问同一页面直接读取。
      */
     private fun inlineAsLocalUrl(imgs: List<Element>, baseUrl: String, fromMirror: Boolean) {
         var n = 0
@@ -930,7 +939,7 @@ object GhView {
         }.getOrDefault(Integer.toHexString(first.hashCode()))
     }
 
-    /** 单测用：绕过 render() 直接登记某个 key 的候选地址（内容同 [rememberCandidates]） */
+    /** 单测使用：绕过 render() 直接登记某个 key 的候选地址（内容同 [rememberCandidates]） */
     internal fun rememberCandidatesForTest(key: String, cands: List<String>) =
         rememberCandidates(key, cands)
 
@@ -938,35 +947,35 @@ object GhView {
         synchronized(imgIndex) { imgIndex[key] = cands }
     }
 
-    /** 由虚拟地址反查真实候选；界面层取图用（LRU 淘汰后就查不到，此时按失败处理） */
+    /** 由虚拟地址反查真实候选；界面层取图使用（LRU 淘汰后无法查到，此时按失败处理） */
     fun candidatesFor(key: String): List<String> =
         synchronized(imgIndex) { imgIndex[key] } ?: emptyList()
 
     /**
-     * WebView 拦到 `https://ghimg.local/<key>` 后调这里。
-     * 先查磁盘缓存，命中就直接返回（不联网）；没命中才按候选顺序取一次并落盘。
-     * 必须在后台线程调用（内部是同步 HTTP）——WebView 的 shouldInterceptRequest 本就在非 UI 线程。
+     * WebView 拦截到 `https://ghimg.local/<key>` 后调用此方法。
+     * 先查询磁盘缓存，命中则直接返回（不联网）；未命中时按候选顺序 fetch 一次并落盘。
+     * 必须在后台线程调用（内部为同步 HTTP），WebView 的 shouldInterceptRequest 本即在非 UI 线程。
      */
     fun loadImage(key: String): Pair<ByteArray, String>? {
         if (!KEY_RE.matches(key)) return null
         val lock = lockFor(key)
-        // 1) 命中缓存直接给。锁只包住磁盘读写，**绝不包住联网**——
-        //    分片锁是按 key 哈希分的，拿着它等 25s 网络会把哈希到同一片的别的图一起堵住。
-        //    命中时一次都不联网：用户在飞行模式下重看同一页，这条路也必须能出图。
+        // 1) 命中缓存直接返回。锁仅包裹磁盘读写，**绝不包裹联网**，
+        //    分片锁按 key 哈希分配，持锁等待 25s 网络会阻塞哈希到同一片的其他图片。
+        //    命中时不发起任何网络请求：用户在飞行模式下重看同一页，此路径也必须能显示图片。
         synchronized(lock) { cachedImage(key)?.let { (mime, bytes) -> return bytes to mime } }
         val cands = candidatesFor(key)
         if (cands.isEmpty()) return null
-        // 2) 同一张图的并发请求只放一个去联网
+        // 2) 同一张图片的并发请求仅放行一个去联网
         val gate = CountDownLatch(1)
         if (inFlight.putIfAbsent(key, gate) != null) {
-            // 已经有别的线程在取：等它落盘（等不到就失败，不能把拦截线程挂死）
+            // 已有其他线程在 fetch：等待其落盘（等待超时则失败，不能阻塞拦截线程）
             runCatching { gate.await(IN_FLIGHT_WAIT_S, TimeUnit.SECONDS) }
             val again = synchronized(lock) { cachedImage(key) }
             return again?.let { (mime, bytes) -> bytes to mime }
         }
         try {
-            // 总并发名额用 tryAcquire 而不是 acquire：这是 WebView 的拦截线程，
-            // 不能让它无限期排队（拿不到名额就当这张图这次取不到，页面其余部分照常显示）
+            // 总并发名额使用 tryAcquire 而非 acquire：此为 WebView 拦截线程，
+            // 不能无限期排队（获取不到名额则视为本次该图片无法获取，页面其余部分正常显示）
             if (!imageFetchSlots.tryAcquire(SLOT_WAIT_S, TimeUnit.SECONDS)) return null
             val hit = try {
                 imageLoader(cands)
@@ -982,7 +991,7 @@ object GhView {
         }
     }
 
-    /** 图片扩展名（缓存文件名用），只认我们内联的那几种 */
+    /** 图片扩展名（用于缓存文件名），仅识别内联支持的几种格式 */
     private fun extOf(mime: String): String = when {
         mime.contains("png") -> "png"
         mime.contains("jpeg") || mime.contains("jpg") -> "jpg"
@@ -993,16 +1002,16 @@ object GhView {
     }
 
     /**
-     * 读缓存。三道检查，任何一道不过就删文件并按「没有缓存」处理：
-     *  1. 大小：空文件 / 超过 [MAX_IMAGE_BYTES]（说明写歪了或存了个超规格的东西）；
-     *  2. 时效：超过 [IMAGE_CACHE_TTL_MS]（URL 没变但作者换了图，只有过期能救）；
-     *  3. 完整性：文件头魔数和记录的格式对得上——上次写盘时被系统杀掉会留下截断文件，
-     *     不校验就直接喂给 WebView，结果是**永远显示一张坏图**（这一层没法回源重试）。
+     * 读取缓存。三项检查，任一不通过则删除文件并按「无缓存」处理：
+     *  1. 大小：空文件 / 超过 [MAX_IMAGE_BYTES]（说明写入异常或存储了超规格内容）；
+     *  2. 时效：超过 [IMAGE_CACHE_TTL_MS]（URL 未变但作者替换了图片，仅有过期机制可解决）；
+     *  3. 完整性：文件头魔数与记录格式匹配，上次写盘时被系统终止会留下截断文件，
+     *     不校验直接提供给 WebView 会导致**永远显示损坏图片**（此层无法回源重试）。
      *
-     * 注意这里**故意不刷新 mtime**：mtime 同时是 [IMAGE_CACHE_TTL_MS] 的计时起点和
-     * [trimImageCache] 的淘汰依据，读一次就把 mtime 推到今天的话，
-     * 常被看的图就永远过不了期（作者换图也看不见）。淘汰口径因此是「最久没重新取过」，
-     * 而不是「最久没被看过」——对按 URL 取名的图片缓存来说这个差别可以接受。
+     * 注意此处**故意不刷新 mtime**：mtime 同时作为 [IMAGE_CACHE_TTL_MS] 的计时起点与
+     * [trimImageCache] 的淘汰依据，若每次读取都将 mtime 更新为当前时间，
+     * 高频访问的图片将永不过期（作者替换图片也无法感知）。淘汰策略因此为「最久未重新 fetch」，
+     * 而非「最久未访问」。对于按 URL 命名的图片缓存，此差异可以接受。
      */
     private fun cachedImage(key: String): Pair<String, ByteArray>? {
         val dir = imageCacheDir ?: return null
@@ -1016,8 +1025,8 @@ object GhView {
                 f.delete(); return@runCatching null
             }
             val bytes = f.readBytes()
-            // 返回**校验过的 MIME**，不是扩展名：这里以前直接给 "png"，
-            // 而调用方拿它当 WebResourceResponse 的 MIME 用，正确值应该是 "image/png"
+            // 返回**校验后的 MIME**，而非扩展名：此处曾直接返回 "png"，
+            // 而调用方将其作为 WebResourceResponse 的 MIME 使用，正确值应为 "image/png"
             val mime = mimeOfCached(f.extension, bytes)
             if (mime == null) { f.delete(); return@runCatching null }
             mime to bytes
@@ -1025,8 +1034,8 @@ object GhView {
     }
 
     /**
-     * 校验缓存文件的魔数是否与扩展名相符。
-     * 不相符即判损坏（返回 null 触发删文件重取）。svg 是文本没法靠魔数判，只查非空且像标签。
+     * 校验缓存文件的魔数是否与扩展名匹配。
+     * 不匹配则判定为损坏（返回 null 触发删除文件并重新 fetch）。svg 为文本格式无法通过魔数判断，仅检查非空且包含标签特征。
      */
     private fun mimeOfCached(ext: String, b: ByteArray): String? = when (ext) {
         "png" -> if (b.size > 8 && b[0] == 0x89.toByte() && b[1] == 'P'.code.toByte() &&
@@ -1042,17 +1051,17 @@ object GhView {
     }
 
     /**
-     * 落盘：**先写 .tmp 再 rename**，rename 在同目录内是原子的。
-     * 直接写目标文件的话，进程在 write 中途被系统杀掉就留下半张图——
-     * 下一次读它时魔数校验虽然能发现并删掉，但既然能避免就别留这个窗口。
-     * 顺带清掉同 key 的旧扩展名文件（作者换了图片格式时不会剩两份）。
+     * 写入磁盘：**先写 .tmp 再 rename**，rename 在同目录内为原子操作。
+     * 若直接写目标文件，进程在 write 中途被系统终止将留下半张图片。
+     * 下一次读取时魔数校验虽能发现并删除，但应尽量避免此窗口。
+     * 同时清理同 key 的旧扩展名文件（作者更换图片格式时不会残留两份）。
      */
     private fun saveImage(key: String, mime: String, bytes: ByteArray) {
         val dir = imageCacheDir ?: return
         if (!KEY_RE.matches(key)) return
-        // 只缓存能靠魔数自检的格式（png/jpeg/gif/webp/svg）。
-        // 其余 image/*（例如某些第三方 CDN 给的 avif）我们既没法校验、旧内核也可能画不出来，
-        // 那就**照样显示、只是不落盘**——下次重新取，避免出现「读得出、验不了」的缓存条目。
+        // 仅缓存可通过魔数自检的格式（png/jpeg/gif/webp/svg）。
+        // 其余 image/*（例如某些第三方 CDN 提供的 avif）既无法校验，旧内核也可能无法渲染，
+        // 因此**照常显示但不落盘**，下次重新 fetch，避免出现「可读但无法校验」的缓存条目。
         val ext = extOf(mime)
         if (ext == "bin") return
         runCatching {
@@ -1072,10 +1081,10 @@ object GhView {
     }
 
     /**
-     * 缓存目录超过 [IMAGE_CACHE_BYTES] 就删「最久没重新取过」的（手机存储不能无限吃）。
-     * 口径是文件的 mtime = 落盘时间，读取**不**刷新它——见 [cachedImage] 里那段取舍说明。
-     * 顺手清掉写一半就被杀掉的 `.tmp`：它们永远不会被读到（[cachedImage] 显式排除），
-     * 不清就等于永久占着配额。
+     * 缓存目录超过 [IMAGE_CACHE_BYTES] 后删除「最久未重新 fetch」的文件（手机存储不应被无限占用）。
+     * 判定依据为文件的 mtime（落盘时间），读取**不**刷新它，理由见 [cachedImage]。
+     * 同时清理写入中途被终止的 `.tmp` 文件：它们永远不会被读取（[cachedImage] 显式排除），
+     * 不清理则永久占用配额。
      */
     private fun trimImageCache(dir: File) {
         runCatching {
@@ -1093,21 +1102,21 @@ object GhView {
         }
     }
 
-    /** 缓存目录当前占用（设置页显示用） */
+    /** 缓存目录当前占用空间（设置页显示使用） */
     fun imageCacheBytes(): Long = runCatching {
         val dir = imageCacheDir ?: return 0L
         (dir.listFiles()?.toList() ?: emptyList()).fold(0L) { acc, f -> acc + f.length() }
     }.getOrDefault(0L)
 
-    /** 清图片缓存（设置页「浏览」里的手动入口），返回删掉的字节数 */
+    /** 清除图片缓存（设置页「浏览」中的手动入口），返回释放的字节数 */
     fun clearImageCache(): Long {
         val dir = imageCacheDir ?: return 0L
         var freed = 0L
-        // 这里**故意不去抢分片锁**：本函数由设置页按钮在 UI 线程调用，
-        // 而取图线程可能正持着某一片做磁盘写，抢锁最坏会让界面卡住好几秒（ANR）。
-        // 清理与并发写入交叠的后果只是「有个别文件没删干净」，
-        // 而写入走的是「临时文件 + rename」，不会因此产生半张坏图，代价可以接受。
-        // 顺带把 in-flight 表清掉：正在取图的 key 被删后不该继续占着去重名额。
+        // 此处**故意不获取分片锁**：本函数由设置页按钮在 UI 线程调用，
+        // 而取图线程可能正持有某一片锁进行磁盘写入，抢锁最坏情况会导致界面卡死数秒（ANR）。
+        // 清理与并发写入交叠的后果仅为「个别文件未删除干净」，
+        // 而写入采用「临时文件 + rename」机制，不会因此产生半张损坏图片，代价可接受。
+        // 同时清空 in-flight 表：正在 fetch 的 key 被删除后不应继续占用去重名额。
         inFlight.keys.toList().forEach { inFlight.remove(it)?.countDown() }
         runCatching {
             val files: List<File> = dir.listFiles()?.toList() ?: emptyList()
@@ -1120,10 +1129,10 @@ object GhView {
         return freed
     }
 
-    /** 旧的 base64 内联实现：整页自包含，但慢且会挤掉正文，作为可选档保留 */
+    /** 旧版 base64 内联实现：整页自包含，但速度慢且可能挤占正文空间，作为可选档保留 */
     private fun inlineAsBase64(root: Element, imgs: List<Element>, baseUrl: String, fromMirror: Boolean) {
 
-        // 1. 先算出每张图要试哪些地址（纯字符串活，不发请求），超数量的直接定死删掉
+        // 1. 计算每张图需尝试的候选地址（纯字符串处理，不发起请求），超出数量限制的直接删除
         val plan = ArrayList<Pair<Element, List<String>>>(imgs.size)
         for ((i, img) in imgs.withIndex()) {
             val cands = imageCandidates(img.attr("src").trim(), baseUrl, fromMirror)
@@ -1132,8 +1141,8 @@ object GhView {
         }
         if (plan.isEmpty()) return
 
-        // 2. 并发取。invokeAll 带超时：到点没回来的任务自动取消，
-        //    所以「一个死链拖住整页」不会发生，最坏就是等满 IMAGE_BUDGET_MS
+        // 2. 并发 fetch。invokeAll 带超时：到期未完成的任务自动取消，
+        //    因此「单个死链拖慢整页」的情况不会发生，最坏为等待满 IMAGE_BUDGET_MS
         val pool = Executors.newFixedThreadPool(minOf(IMAGE_PARALLEL, plan.size))
         val results = try {
             val tasks = plan.map { (_, cands) -> Callable { imageLoader(cands) } }
@@ -1143,7 +1152,7 @@ object GhView {
             pool.shutdownNow()
         }
 
-        // 3. 按文档顺序内联，同时守住整页体积上限
+        // 3. 按文档顺序内联，同时遵守整页体积上限
         var total = 0L
         for (idx in plan.indices) {
             val img = plan[idx].first
@@ -1159,18 +1168,18 @@ object GhView {
     }
 
     /**
-     * 一个 <img src> 的取图候选（去重、保持顺序）。
-     * 与链接不同，图片**不需要**折算成逻辑地址（它最终变成 data:，界面里看不到），
-     * 所以这里保留页面原写法作为首选候选，避免把镜像能取到的图绕去连不通的官方域。
+     * 单个 <img src> 的取图候选列表（去重、保持顺序）。
+     * 与链接不同，图片**无需**折算为逻辑地址（最终变为 data:，界面中不可见），
+     * 因此此处保留页面原始写法作为首选候选，避免将镜像可获取的图片绕道至无法连通的官方域。
      */
     private fun imageCandidates(src: String, baseUrl: String, fromMirror: Boolean): List<String> {
         val raw = absolutize(src, baseUrl) ?: return emptyList()
-        // 不做限制的话，任意仓库的 README 就能驱使这台手机去访问它想访问的地址（内网、本机服务都算），
-        // 所以内网/回环地址一类直接不取（<img> 会被删掉）。
+        // 若不加限制，任意仓库的 README 即可驱使本机访问其指定地址（内网、本机服务均算），
+        // 因此内网/回环地址一律不 fetch（<img>  | 将被删除）。
         if (!isPublicHost(raw)) return emptyList()
         val logical = toLogical(raw)
         val out = LinkedHashSet<String>()
-        // 本页来自镜像：先走镜像那条通道（国内可达），再试官方/原始地址，最后用官方地址反推镜像写法
+        // 本页来自镜像：先走镜像通道（国内可达），再尝试官方/原始地址，最后用官方地址反推镜像写法
         if (fromMirror) mirrorChannel(logical)?.let { out.add(it) }
         out.add(raw)
         out.add(logical)
@@ -1178,7 +1187,7 @@ object GhView {
         return out.filter { it.startsWith("https://") }.toList()
     }
 
-    /** 官方地址 → 任何一条可用的镜像通道（github 系用 [mirrorOf]，外站用通用转发前缀） */
+    /** 官方地址 → 任意可用镜像通道（github 系使用 [mirrorOf]，外站使用通用转发前缀） */
     private fun mirrorChannel(logical: String): String? {
         mirrorOf(logical)?.let { return it }
         val u = runCatching { URL(logical) }.getOrNull() ?: return null
@@ -1192,16 +1201,16 @@ object GhView {
     }
 
     /**
-     * 这个地址能不能让手机去连。
+     * 判断该地址是否允许本机连接。
      *
-     * 拦掉 IP 字面量里的内网/回环/链路本地段与 localhost 一类伪域：
-     * README 是第三方内容，不该由它决定我们请求哪儿（SSRF）。
-     * 域名不做黑白名单——真实 README 的图常在各种第三方站点上（实测 jsonplaceholder、shields 等），
-     * 拦掉就等于一堆破图；且本 App 只发 GET 取图，不带任何凭据。
+     * 拦截 IP 字面量中的内网/回环/链路本地段与 localhost 等伪域：
+     * README 为第三方内容，不应由其决定请求目标（SSRF 防护）。
+     * 域名不做黑白名单，真实 README 的图片常位于各种第三方站点（实测包括 jsonplaceholder、shields 等），
+     * 拦截会导致大量图片无法显示；且本应用仅发送 GET 请求获取图片，不携带任何凭据。
      *
-     * 这一层是「唯一入口」式的检查：图片、页面主文档（[Fetcher.fetch]）都过它，
-     * 所以它拦不住就等于 curl / wget 会被喂内网地址——命令行工具自己不做任何限制，
-     * 边界只在这段 Kotlin 里。宁可错杀几个怪地址，也不能漏。
+     * 此层为「唯一入口」式检查：图片、页面主文档（[Fetcher.fetch]）均经过此检查，
+     * 因此若此处拦截失效，curl / wget 将被喂入内网地址，命令行工具自身不做任何限制，
+     * 安全边界仅在此段 Kotlin 代码中。宁可误拦截部分异常地址，也不能遗漏。
      */
     internal fun isPublicHost(url: String): Boolean {
         val host = runCatching { URL(url).host.lowercase() }.getOrNull() ?: return false
@@ -1212,11 +1221,11 @@ object GhView {
             host == "metadata.google.internal") return false
         val ip = host.removeSurrounding("[", "]")
         if (IPV4.matches(ip)) return publicIpv4(ip)
-        // 点分十进制以外的 IPv4 写法：URL 解析器与 curl / wget 都接受
-        // http://2130706433/ （= 127.0.0.1）、http://0177.0.0.1/（八进制）、
-        // http://127.1/（短写）。以前只查点分十进制，这些写法全都放过去了。
-        // 只认两种「不带点」的写法：纯十进制整数（2130706433）和 0x 开头的十六进制（0x7f000001）。
-        // 不敢把「全是 a-f 字母」也算进来，否则会误伤正常主机名。
+        // 点分十进制以外的 IPv4 写法：URL 解析器与 curl / wget 均接受
+        // http://2130706433/（= 127.0.0.1）、http://0177.0.0.1/（八进制）、
+        // http://127.1/（简写）。此前仅检查点分十进制，这些写法全部被放行。
+        // 仅识别两种「不带点」的写法：纯十进制整数（2130706433）与 0x 开头的十六进制（0x7f000001）。
+        // 不能将「全为 a-f 字母」也计入，否则会误伤正常主机名。
         if (!ip.contains(':') && !ip.contains('.')) {
             val asLong = when {
                 ip.all { it.isDigit() } -> ip.toLongOrNull()
@@ -1232,22 +1241,22 @@ object GhView {
             }
         }
         if (!ip.contains(':')) return true
-        // IPv6 字面量：本 App 的 OkHttp 侧基本走不到 v6，但 curl -L 会照抄地址请求，
-        // 所以 ::1 / fc00::/7（ULA）/ fe80::/10（链路本地）/ v4 映射地址都得拦。
-        // 地址可能带 zone id（%25eth0），先去掉。
+        // IPv6 字面量：本应用的 OkHttp 侧基本不会走到 v6，但 curl -L 会照抄地址请求，
+        // 因此 ::1 / fc00::/7（ULA）/ fe80::/10（链路本地）/ v4 映射地址均需拦截。
+        // 地址可能带 zone id（%25eth0），先去除。
         val v6 = ip.substringBefore('%')
         if (v6 == "::" || v6 == "::1") return false
         if (v6.startsWith("fe8") || v6.startsWith("fe9") || v6.startsWith("fea") || v6.startsWith("feb")) return false
         if (v6.startsWith("fc") || v6.startsWith("fd")) return false     // ULA
         if (v6.startsWith("ff")) return false                            // 组播
         // IPv4 兼容/映射写法：::ffff:127.0.0.1、::127.0.0.1、64:ff9b::（NAT64）
-        Regex("^(::ffff:|::|64:ff9b::)([0-9a-f.]+)$").find(v6)?.groupValues?.getOrNull(2)?.let { tail ->
+        RE_V4_MAPPED.find(v6)?.groupValues?.getOrNull(2)?.let { tail ->
             if (IPV4.matches(tail)) return publicIpv4(tail)
         }
         return true
     }
 
-    /** 点分（或可归一化成点分的）IPv4 是否公网地址 */
+    /** 点分（或可归一化为点分的）IPv4 是否为公网地址 */
     private fun publicIpv4(ip: String): Boolean {
         val parts = ip.split('.').map { it.toIntOrNull() ?: return false }
         if (parts.size != 4 || parts.any { it !in 0..255 }) return false
@@ -1261,13 +1270,13 @@ object GhView {
     }
 
     /**
-     * 十进制 / 十六进制单段 IPv4 的归一化就写在 [isPublicHost] 里，这里不再单列函数：
-     * 常见绕过写法是 `http://2130706433/`（= 127.0.0.1）与 `http://0x7f000001/`。
-     * 更花的分段写法（0177.0.0.1 八进制、127.1 短写）留给调用侧按「看不出是 IP 就当域名」处理——
-     * 本函数只负责把最主流的两条堵住，其余怪写法连不上内网关键段的风险已经很低。
+     * 十进制 / 十六进制单段 IPv4 的归一化已在 [isPublicHost] 中实现，此处不再单列函数：
+     * 常见绕过写法为 `http://2130706433/`（= 127.0.0.1）与 `http://0x7f000001/`。
+     * 更复杂的分段写法（0177.0.0.1 八进制、127.1 简写）交由调用侧按「无法识别为 IP 则视为域名」处理，
+     * 本函数仅负责拦截主流两条，其余异常写法连不通内网关键段的风险已很低。
      */
 
-    /** 把 href/src 变成绝对地址，但**不做**镜像→官方的折算（图片取回用得上原始写法） */
+    /** 将 href/src 转换为绝对地址，但**不做**镜像→官方折算（图片 fetch 需要原始写法） */
     private fun absolutize(href: String, baseUrl: String): String? {
         val h = href.removePrefix("./").trim()
         if (h.isEmpty()) return null
@@ -1277,13 +1286,13 @@ object GhView {
         return "${base.protocol}://${base.host}$h"
     }
 
-    /** 按候选顺序取一张图，命中即返回；全部失败返回 null */
+    /** 按候选顺序 fetch 单张图片，成功则返回；全部失败返回 null */
     private fun fetchImage(candidates: List<String>): Pair<ByteArray, String>? {
         for (url in candidates) {
             val hit = runCatching {
                 val req = Request.Builder().url(url).header("User-Agent", CLI_UA).build()
-                // 用 [Fetcher.guarded] 而不是 Net.browse：图片同样会 302，
-                // 只在入口查一次 host 的话，「公网图床跳到 127.0.0.1」就绕过了 SSRF 检查
+                // 使用 [Fetcher.guarded] 而非 Net.browse：图片同样会 302，
+                // 若仅在入口检查一次 host，「公网图床跳转至 127.0.0.1」即绕过 SSRF 检查
                 Fetcher.guarded().newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@use null
                     val bytes = resp.body?.bytes() ?: return@use null
@@ -1298,7 +1307,7 @@ object GhView {
         return null
     }
 
-    /** Content-Type 缺失或不对时按魔数判断，避免把 HTML 错误页当图片内联 */
+    /** Content-Type 缺失或不正确时按魔数判断，避免将 HTML 错误页当作图片内联 */
     private fun guessImageMime(url: String, b: ByteArray): String? = when {
         b.size > 8 && b[0] == 0x89.toByte() && b[1] == 'P'.code.toByte() -> "image/png"
         b.size > 3 && b[0] == 0xFF.toByte() && b[1] == 0xD8.toByte() -> "image/jpeg"
@@ -1308,16 +1317,16 @@ object GhView {
         else -> null
     }
 
-    /** 兜底的字符级截断。正常情况下 [truncateToBudget] 已经把长度压到预算内，这里不会触发。 */
+    /** 回退的字符级截断。正常情况下 [truncateToBudget] 已将长度控制在预算内，此处不会触发。 */
     private fun limit(s: String, max: Int): String =
         if (s.length <= max) s
-        else s.substring(0, max) + "<p class=\"trunc\">（正文过长，已截断；完整内容请用顶栏「在浏览器打开」）</p>"
+        else s.substring(0, max) + "<p class=\"trunc\">（正文过长，已截断；完整内容请使用顶栏「在浏览器打开」）</p>"
 
     /**
-     * 整页 HTML 超出预算时，从尾部**按元素**丢弃，并在末尾补一句提示。
+     * 整页 HTML 超出预算时，从尾部**按元素**丢弃，并在末尾附加提示。
      *
-     * 只按元素边界丢，绝不切字符串——切在 base64 中间会得到一张打不开的图。
-     * 预算连第一个元素都装不下时（整篇截图常常裹在一个 `<div>` 里），钻进它继续找边界，
+     * 仅按元素边界丢弃，绝不切字符串，切在 base64 中间会产生无法显示的图片。
+     * 预算连第一个元素都无法容纳时（整篇截图常包裹在单个 `<div>` 中），进入其内部继续查找边界，
      * 最多下钻 4 层，避免深嵌套页面递归失控。
      */
     internal fun truncateToBudget(body: Element, max: Int, depth: Int): Boolean {
@@ -1332,7 +1341,7 @@ object GhView {
             keep++
         }
         if (keep == 0) {
-            // 单是第一个元素就超预算：后面的兄弟肯定更装不下，先删掉再往里钻
+            // 单个第一个元素即超预算：后续兄弟节点必然更无法容纳，先删除再向内递归
             kids.drop(1).forEach { it.remove() }
             return if (depth >= 4) true else truncateToBudget(kids[0], max, depth + 1)
         }
@@ -1345,14 +1354,18 @@ object GhView {
 
     private fun escAttr(s: String): String = escText(s).replace("\"", "&quot;")
 
-    /** 生成完整本地文档：自带排版并跟随系统深浅色，不引用任何外部资源 */
-    private fun page(title: String, note: String, url: String, info: Info, body: String, dark: Boolean): String {
+    /**
+     * 生成完整本地文档：自带排版并跟随系统深浅色，不引用任何外部资源。
+     * [title] 仅写入文档 <title>；正文顶部不再输出标题行与获取状态（所用通道、耗时），
+     * 二者已由应用顶栏显示，重复输出表现为页面上方多出一段悬浮文字。
+     */
+    private fun page(title: String, url: String, info: Info, body: String, dark: Boolean): String {
         val chips = StringBuilder()
         if (info.stars.isNotBlank()) chips.append("<span>★ ").append(escText(info.stars)).append("</span>")
         if (info.forks.isNotBlank()) chips.append("<span>⑂ ").append(escText(info.forks)).append("</span>")
         if (info.lang.isNotBlank()) chips.append("<span>").append(escText(info.lang)).append("</span>")
         if (info.updated.isNotBlank()) chips.append("<span>更新 ").append(escText(info.updated)).append("</span>")
-        chips.append("<span>").append(escText(note)).append("</span>")
+        val chipRow = if (chips.isEmpty()) "" else "<div class=\"chips\">" + chips + "</div>"
         val desc = if (info.desc.isBlank()) "" else "<p class=\"desc\">" + escText(info.desc) + "</p>"
         return """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -1388,9 +1401,7 @@ h2,h3,h4{line-height:1.3;margin:20px 0 8px}
 .trunc{color:var(--muted);font-size:13px}
 </style></head>
 <body>
-<h1>${escText(title)}</h1>
-<div class="meta">${escText(url)}</div>
-<div class="chips">$chips</div>
+$chipRow
 $desc
 <hr>
 $body

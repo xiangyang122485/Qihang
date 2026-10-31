@@ -5,11 +5,12 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * 内置 wget 的状态码解析（第八轮）。
+ * 内置 wget 的状态码解析测试。
  *
- * 为什么值得单独测：wget 没有「把状态码打到 stdout」的参数，App 只能从 -S 写进
- * stderr 的响应头里捞。这条通道一旦解析错，界面就会显示错的状态（把 404 当 200，
- * 或者反过来把有用的 404 页面当成整条通道失败）——而它跑不进 JVM，只能靠纯函数测。
+ * wget 无「将状态码输出至 stdout」的参数，应用仅能从 -S 写入
+ * stderr 的响应头中提取状态码。解析错误将导致界面显示不正确的状态
+ * （如将 404 误判为 200，或将有效的 404 页面误判为整条通道失败）。
+ * 该逻辑无法在 JVM 中运行，需通过纯函数单元测试覆盖。
  */
 class FetcherStatusParseTest {
 
@@ -27,7 +28,7 @@ class FetcherStatusParseTest {
 
     @Test
     fun `解析不出来就返回 null 不猜 200`() {
-        // 「awaiting response... 200 OK」是 wget 自己的进度行，不是响应头，不能拿
+        // "awaiting response... 200 OK" 为 wget 自身进度行，非响应头，不应作为解析输入
         assertNull(Fetcher.parseHttpStatus("HTTP request sent, awaiting response... 200 OK\n"))
         assertNull(Fetcher.parseHttpStatus(""))
         assertNull(Fetcher.parseHttpStatus("Connecting to github.com... connected."))

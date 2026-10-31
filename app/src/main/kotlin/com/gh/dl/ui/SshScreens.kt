@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -35,12 +35,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gh.dl.data.SshKeys
+import com.gh.dl.data.Threads
 
-/** 把当前激活钥匙的公钥/指纹同步进 AppState（供其它页面展示） */
+/** 将当前激活密钥的公钥/指纹同步进 AppState（供其他页面展示） */
 fun refreshKey(ctx: android.content.Context) {
     val a = SshKeys.active(ctx)
     AppState.pubKey = a?.pub ?: ""
@@ -48,14 +50,14 @@ fun refreshKey(ctx: android.content.Context) {
 }
 
 /**
- * SSH 密钥管理（设置 → 克隆 → SSH 密钥管理，设置里唯一的 SSH 入口）。
+ * SSH 密钥管理（设置 → 克隆 → SSH 密钥管理，设置中唯一的 SSH 入口）。
  *
- * 钥匙用 Android Keystore 加密后存在本机（只有本 App 能解密），可持久保存、可删除、可多把并存。
- * 已经加到 GitHub 的钥匙不会因为“过期”消失——它们都在这儿列着，点「设为当前」即可用于克隆。
+ * 密钥使用 Android Keystore 加密后存储在本机（仅本应用可解密），可持久保存、可删除、可多份并存。
+ * 已添加到 GitHub 的密钥不会因「过期」而消失——所有密钥均在此处列出，点击「设为当前」即可用于克隆。
  *
- * 阶段 4 重构：不再做「SSH 第1步 / 第2步」独立页。
- *  - 还没有任何钥匙：顶部显示「首次使用引导」卡片，整合 生成钥匙 / 第1步复制公钥加 GitHub / 第2步测线路克隆；
- *  - 已经有钥匙：顶部显示「我的钥匙」列表，下面仍保留生成新钥匙 / 导入 / 第1步 / 第2步 / 合规说明。
+ * 阶段 4 重构：不再使用「SSH 第 1 步 / 第 2 步」独立页面。
+ *  - 尚无任何密钥：顶部显示「首次使用引导」卡片，整合生成密钥 / 第 1 步复制公钥添加到 GitHub / 第 2 步测线路克隆；
+ *  - 已有密钥：顶部显示「我的密钥」列表，下方仍保留生成新密钥 / 导入 / 第 1 步 / 第 2 步 / 合规说明。
  */
 @Composable
 fun SshKeyScreen(onBack: () -> Unit) {
@@ -69,6 +71,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
     var showImport by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var importLabel by remember { mutableStateOf("") }
+    var importPass by remember { mutableStateOf("") }
     var importBusy by remember { mutableStateOf(false) }
     var confirmDelId by remember { mutableStateOf<String?>(null) }
 
@@ -89,7 +92,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
             Text("SSH 密钥管理", fontWeight = FontWeight.Bold, fontSize = 18.sp)
         }
@@ -99,7 +102,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("状态：", fontSize = 13.sp)
                     Text(
-                        if (keys.isEmpty()) "还没有钥匙" else "共 ${keys.size} 把",
+                        if (keys.isEmpty()) "尚无密钥" else "共 ${keys.size} 份",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (keys.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary
@@ -107,44 +110,44 @@ fun SshKeyScreen(onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "GitHub 的 443 端口在这个网络里会被重置，22 端口（git 官方 SSH 协议）是通的。" +
-                        "钥匙用手机本地加密保存（仅本 App 能读取），生成后把公钥加到 GitHub 即可克隆。",
+                    "GitHub 443 端口在部分网络环境被重置，22 端口（SSH）可正常连接。" +
+                        "密钥在本机加密保存，仅本应用可读取；生成后将公钥添加至 GitHub 即可克隆。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // ---- 首次使用引导（没有任何钥匙时） ----
+        // ---- 首次使用引导（尚无任何密钥时） ----
         if (keys.isEmpty()) {
             GhCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("首次使用 SSH 克隆（引导）", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text(
-                        "三步搞定：① 生成钥匙 → ② 复制公钥加到 GitHub → ③ 测线路并克隆。",
+                        "步骤：① 生成密钥 → ② 公钥添加至 GitHub → ③ 测线路并克隆。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text("第 1 步：先生成一把钥匙", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("第 1 步：生成密钥", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     OutlinedTextField(
                         value = label,
                         onValueChange = { label = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        placeholder = { Text("给这把钥匙起个名字，如 手机A", fontSize = 12.sp) },
+                        placeholder = { Text("密钥名称，如「手机A」", fontSize = 12.sp) },
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
                     )
                     Spacer(Modifier.height(6.dp))
                     Button(
                         onClick = {
                             genBusy = true
-                            Thread {
+                            Threads.start("生成密钥") {
                                 try {
                                     SshKeys.generate(ctx, label.trim())
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         label = ""
                                         genBusy = false
                                         reload()
-                                        toast(ctx, "钥匙已生成并设为当前")
+                                        toast(ctx, "密钥已生成并设为当前")
                                     }
                                 } catch (e: Throwable) {
                                     android.util.Log.e("gh-ssh", "genKey failed", e)
@@ -153,7 +156,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
                                         toast(ctx, "生成失败：$e")
                                     }
                                 }
-                            }.start()
+                            }
                         },
                         enabled = !genBusy
                     ) {
@@ -162,28 +165,26 @@ fun SshKeyScreen(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(8.dp))
                     if (AppState.pubKey.isNotBlank()) {
-                        Text("第 2 步：复制公钥加到 GitHub", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("第 2 步：复制公钥添加到 GitHub", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         Row {
                             Button(onClick = { copyText(ctx, AppState.pubKey, "公钥已复制") }) {
                                 Text("复制公钥")
                             }
                             Spacer(Modifier.width(8.dp))
                             TextButton(onClick = {
-                                ctx.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/settings/keys"))
-                                )
+                                openUrl(ctx, "https://github.com/settings/keys")
                             }) { Text("打开 GitHub 添加页") }
                         }
                         if (AppState.fingerprint.isNotBlank()) {
                             Spacer(Modifier.height(4.dp))
                             Text("指纹 ${AppState.fingerprint}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
-                                "加完后回 GitHub 列表页核对指纹是否一致，一致才算真的保存成功。",
+                                "添加后在 GitHub 列表页核对指纹，一致即为保存成功。",
                                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     } else {
-                        Text("点上方「生成并保存」后，这里会出现复制公钥的按钮。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("点上方「生成并保存」后显示复制公钥按钮。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.height(8.dp))
                     Text("第 3 步：测线路并克隆", fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -199,7 +200,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     if (vmParser.slug.isBlank()) {
                         Text(
-                            "先去「解析器」里粘贴一个仓库链接，这里就能一键克隆。",
+                            "先在「解析器」粘贴仓库链接，再在此处执行克隆。",
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
@@ -209,18 +210,18 @@ fun SshKeyScreen(onBack: () -> Unit) {
                         ) { Text("克隆 ${vmParser.slug}") }
                         if (AppState.pickedIp.isBlank()) {
                             Spacer(Modifier.height(4.dp))
-                            Text("没测线路也行，会自动优选一条。", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("未测线路时自动优选。", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
             }
         }
 
-        // ---- 我的钥匙列表（已有钥匙） ----
+        // ---- 我的密钥列表（已有密钥） ----
         if (keys.isNotEmpty()) {
             GhCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
-                    Text("我的钥匙", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("我的密钥", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
                     keys.forEach { e ->
                         val isActive = e.id == activeId
@@ -260,14 +261,14 @@ fun SshKeyScreen(onBack: () -> Unit) {
             }
         }
 
-        // ---- 生成新钥匙（已有钥匙时，避免和首次引导卡重复） ----
+        // ---- 生成新密钥（已有密钥时，避免与首次引导卡重复） ----
         if (keys.isNotEmpty()) {
             GhCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
-                    Text("生成新钥匙", fontWeight = FontWeight.Bold)
+                    Text("生成新密钥", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "钥匙只加密保存在手机本地，不会上传。生成后可「设为当前」用于克隆。",
+                        "密钥在本机加密保存，不上传；生成后可设为当前用于克隆。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(8.dp))
@@ -276,21 +277,21 @@ fun SshKeyScreen(onBack: () -> Unit) {
                         onValueChange = { label = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        placeholder = { Text("给这把钥匙起个名字，如 手机A", fontSize = 12.sp) },
+                        placeholder = { Text("密钥名称，如「手机A」", fontSize = 12.sp) },
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
                     )
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = {
                             genBusy = true
-                            Thread {
+                            Threads.start("激活密钥") {
                                 try {
                                     SshKeys.generate(ctx, label.trim())
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         label = ""
                                         genBusy = false
                                         reload()
-                                        toast(ctx, "钥匙已生成并设为当前")
+                                        toast(ctx, "密钥已生成并设为当前")
                                     }
                                 } catch (e: Throwable) {
                                     android.util.Log.e("gh-ssh", "genKey failed", e)
@@ -299,7 +300,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
                                         toast(ctx, "生成失败：$e")
                                     }
                                 }
-                            }.start()
+                            }
                         },
                         enabled = !genBusy
                     ) {
@@ -339,16 +340,31 @@ fun SshKeyScreen(onBack: () -> Unit) {
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp),
                         maxLines = 12
                     )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = importPass,
+                        onValueChange = { importPass = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = { Text("私钥口令（无口令留空）", fontSize = 12.sp) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
+                    )
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = {
                             importBusy = true
-                            Thread {
+                            val pem = importText
+                            val name = importLabel.trim()
+                            val pass = importPass
+                            Threads.start("导入密钥") {
+                                val h = android.os.Handler(android.os.Looper.getMainLooper())
                                 try {
-                                    SshKeys.importPem(ctx, importLabel.trim(), importText)
-                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    SshKeys.importPem(ctx, name, pem, pass)
+                                    h.post {
                                         importText = ""
                                         importLabel = ""
+                                        importPass = ""
                                         importBusy = false
                                         showImport = false
                                         reload()
@@ -356,12 +372,13 @@ fun SshKeyScreen(onBack: () -> Unit) {
                                     }
                                 } catch (e: Throwable) {
                                     android.util.Log.e("gh-ssh", "import failed", e)
-                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    val msg = e.message ?: ""
+                                    h.post {
                                         importBusy = false
-                                        toast(ctx, "导入失败：私钥格式不对或已损坏")
+                                        toast(ctx, if (msg.isBlank()) "导入失败：私钥格式不正确或已损坏" else "导入失败：$msg")
                                     }
                                 }
-                            }.start()
+                            }
                         },
                         enabled = importText.isNotBlank() && !importBusy
                     ) { Text("加密导入") }
@@ -369,11 +386,11 @@ fun SshKeyScreen(onBack: () -> Unit) {
             }
         }
 
-        // ---- 第 1 步 / 第 2 步（已有钥匙、且已生成公钥时） ----
+        // ---- 第 1 步 / 第 2 步（已有密钥、且已生成公钥时） ----
         if (keys.isNotEmpty() && AppState.pubKey.isNotBlank()) {
             GhCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
-                    Text("第 1 步：把公钥加到 GitHub", fontWeight = FontWeight.Bold)
+                    Text("第 1 步：将公钥添加到 GitHub", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "GitHub → Settings → SSH and GPG keys → New SSH key，" +
@@ -387,16 +404,14 @@ fun SshKeyScreen(onBack: () -> Unit) {
                         }
                         Spacer(Modifier.width(8.dp))
                         TextButton(onClick = {
-                            ctx.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/settings/keys"))
-                            )
+                            openUrl(ctx, "https://github.com/settings/keys")
                         }) { Text("打开 GitHub 添加页") }
                     }
                     Spacer(Modifier.height(4.dp))
                     if (AppState.fingerprint.isNotBlank()) {
                         Text("指纹 ${AppState.fingerprint}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
-                            "加完后回 GitHub 列表页核对指纹是否一致，一致才算真的保存成功。",
+                            "添加后请返回 GitHub 列表页核对指纹是否一致，一致才表示保存成功。",
                             fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -420,15 +435,15 @@ fun SshKeyScreen(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "克隆会拉完整提交历史，几十 MB 起步，可能要好几分钟。" +
-                            "已经在后台服务里跑，切走或锁屏都不会中断；" +
-                            "连续 90 秒没有任何新数据会自动断开并说明原因。",
+                        "克隆拉取完整提交历史，起始大小约数十 MB，耗时可能较长。" +
+                            "任务运行于后台服务，切换页面或锁屏不中断；" +
+                            "连续 90 秒无新数据时自动断开并给出原因。",
                         fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(6.dp))
                     if (vmParser.slug.isBlank()) {
                         Text(
-                            "先去「解析器」里粘贴一个仓库链接，这里就能一键克隆。",
+                            "先在「解析器」粘贴仓库链接，再在此处执行克隆。",
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
@@ -439,7 +454,7 @@ fun SshKeyScreen(onBack: () -> Unit) {
                         if (AppState.pickedIp.isBlank()) {
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "没测线路也行，会自动优选一条。",
+                                "未测线路时系统会自动优选。",
                                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -453,9 +468,9 @@ fun SshKeyScreen(onBack: () -> Unit) {
                 Text("合规与隐私说明", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "只连 GitHub 官方服务器（github.com 的真实 IP，22 端口）。" +
-                        "克隆仅走 GitHub 官方 SSH 服务（22 端口），不经过任何代理或中转。" +
-                        "私钥用 Android Keystore 加密存储，只有本 App 能解密，不会以明文落盘到共享位置。",
+                    "仅连接 GitHub 官方服务器（github.com 的真实 IP，22 端口）。" +
+                        "克隆仅经 GitHub 官方 SSH 服务（22 端口），不经代理或中转。" +
+                        "私钥以 Android Keystore 加密存储，仅本应用可解密，不明文写入共享位置。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -467,12 +482,12 @@ fun SshKeyScreen(onBack: () -> Unit) {
         val delEntry = keys.firstOrNull { it.id == delId }
         AlertDialog(
             onDismissRequest = { confirmDelId = null },
-            title = { Text("删除这把钥匙？") },
+            title = { Text("删除此密钥？") },
             text = {
                 Text(
-                    "「${delEntry?.label ?: "该钥匙"}」会被永久删除。" +
-                        (if (delEntry?.id == activeId) "\n它当前正在使用，删除后需另选一把。" else "") +
-                        "\nGitHub 上已添加的那条也会失效，需要把新公钥重新加一次。"
+                    "「${delEntry?.label ?: "该密钥"}」将被永久删除。" +
+                        (if (delEntry?.id == activeId) "\n该密钥正在使用中，删除后需另选一份。" else "") +
+                        "\nGitHub 上添加的对应公钥需另行移除。"
                 )
             },
             confirmButton = {
@@ -491,8 +506,8 @@ fun SshKeyScreen(onBack: () -> Unit) {
 }
 
 /**
- * 解析页上的「SSH 直连克隆」提示卡：三条常规通道都失败时才出现。
- * 钥匙管理在设置里，这里只放一个动作入口。
+ * 解析页上的「SSH 直连克隆」提示卡：三条常规通道均失败时显示。
+ * 密钥管理在设置中，此处仅提供操作入口。
  */
 @Composable
 fun SshFallbackCard() {
@@ -503,10 +518,10 @@ fun SshFallbackCard() {
 
     GhCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
-            Text("还有一条通道：SSH 直连克隆", fontWeight = FontWeight.Bold)
+            Text("备用通道：SSH 直连克隆", fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
             Text(
-                "走 github.com 的 22 端口直连官方服务器，能拿到带完整提交历史的仓库。",
+                "通过 github.com 的 22 端口直连官方服务器，可获取包含完整提交历史的仓库。",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(10.dp))
@@ -516,7 +531,7 @@ fun SshFallbackCard() {
                 Button(onClick = {
                     AppState.settingsDeepLink = "ssh"
                     AppState.tab = AppState.TAB_SETTINGS
-                }) { Text("去设置里配置") }
+                }) { Text("前往设置配置") }
             } else {
                 Button(
                     onClick = { startClone(ctx, vmParser.slug) },

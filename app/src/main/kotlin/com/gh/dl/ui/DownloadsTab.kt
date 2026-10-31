@@ -34,6 +34,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,9 +54,9 @@ private fun hhmmss(ms: Long): String {
 }
 
 /**
- * 「下载」Tab：只放下载的文件与进行中的任务。
- * 源码仓库（克隆结果）默认存到「设置→下载位置」授权的共享文件夹里，不在这里列，
- * 避免和「下载的文件」（Release 资产）混在一起。
+ * 「下载」Tab：展示已下载的文件与进行中的任务。
+ * 源码仓库（克隆结果）默认存储到「设置 → 下载」授权的共享文件夹中，不在此处列出，
+ * 避免与「已下载的文件」（Release 资产）混合显示。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -64,7 +65,7 @@ fun DownloadsTab() {
     val vmSettings = LocalSettingsVM.current
 
     val ctx = LocalContext.current
-    var tick by remember { mutableStateOf(System.currentTimeMillis()) }
+    var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showLink by remember { mutableStateOf<String?>(null) }
 
     val anyRunning = CloneJob.running || vmDownloads.downloads.any { it.running }
@@ -109,7 +110,7 @@ fun DownloadsTab() {
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "整仓历史较大时要几分钟。可以切到别的页面，进度不会丢。",
+                                "仓库历史较大时耗时较长；可切换页面，进度不受影响。",
                                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -157,9 +158,9 @@ fun DownloadsTab() {
                 }
             }
 
-            // 必须带 key：这一页在下载进行中每 500ms 刷新一次 tick，列表又会增删任务。
-            // 没有 key 时 Compose 按下标对齐，进度条/按钮状态会串到别的任务卡上
-            // （A 的进度显示在 B 那一行），还会让整片卡片重排 —— 列表滚不动、发涩。
+            // 必须指定 key：下载进行中时本页每 500ms 刷新一次 tick，同时列表会增删任务。
+            // 未指定 key 时 Compose 按下标对齐，进度条/按钮状态会错位到其他任务卡片上
+            //（A 的进度显示在 B 的行中），同时导致整片卡片重排，影响列表滚动流畅度。
             items(vmDownloads.downloads, key = { it.id }) { job ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (vmDownloads.dlMultiSelect) {
@@ -212,9 +213,9 @@ fun DownloadsTab() {
                                 }
                             }
                             Spacer(Modifier.height(6.dp))
-                            // 已完成 → 画满格（停止动画）；有总大小 → 真实进度；
-                            // 下载中且总大小未知 → 才用 indeterminate「走动」条；
-                            // 暂停/失败且未知大小 → 不画条（避免已完成还转圈）。
+                            // 已完成 → 显示满格（停止动画）；已知总大小 → 显示真实进度；
+                            // 下载中且总大小未知 → 使用不确定进度条；
+                            // 暂停/失败且未知大小 → 不显示进度条（避免已完成仍显示动画）。
                             val knownTotal = job.total > 0
                             val progress = when {
                                 job.done -> 1f
@@ -252,6 +253,17 @@ fun DownloadsTab() {
                             if (job.where.isNotBlank()) {
                                 Spacer(Modifier.height(4.dp))
                                 Text(job.where, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                            }
+                            // 下载完成后的直接操作：APK 交给系统安装器，其余文件调起系统「打开方式」。
+                            // 仅当记录中带有可访问 URI 时显示，旧记录或失败任务不提供该入口。
+                            if (job.done && !job.failed && !job.running && job.where.isNotBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                FilledTonalButton(
+                                    onClick = { openDownloadedFile(ctx, job) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(if (isApkFile(job.name)) "安装" else "打开", fontSize = 13.sp)
+                                }
                             }
                             if (job.msg.isNotBlank()) {
                                 Spacer(Modifier.height(4.dp))
@@ -302,7 +314,7 @@ fun DownloadsTab() {
             if (vmDownloads.downloads.isEmpty() && !CloneJob.running && CloneJob.result.isBlank()) {
                 item {
                     Text(
-                        "还没有下载任务。在「解析器」里解析一个 GitHub 链接，就能下载 Release 里的软件。",
+                        "暂无下载任务。在「解析器」中解析 GitHub 链接后，即可下载 Release 中的文件。",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -358,24 +370,24 @@ fun DownloadsTab() {
         )
     }
 
-    // 未授权 SAF 下载位置时，先引导去选文件夹，而不是静默下到私有目录
+    // 未授权 SAF 下载位置时，引导用户选择文件夹，而非自动下载到私有目录
     if (AppState.needAuthGuide) {
         AlertDialog(
             onDismissRequest = { AppState.needAuthGuide = false },
             title = { Text("请先选择下载位置") },
             text = {
                 Text(
-                    "下载需要你用系统文件选择器授权一个文件夹（SAF），App 只把文件写进那里。" +
-                        "未授权时不会悄悄下到私有目录。建议去「设置 → 下载」选一个文件夹。",
+                    "下载需经系统文件选择器（SAF）授权文件夹，应用仅写入该目录，" +
+                        "未授权时不会自动下载到私有目录。请在「设置 → 下载」选择文件夹。",
                     fontSize = 13.sp
                 )
             },
             confirmButton = {
                 Button(onClick = {
                     AppState.needAuthGuide = false
-                    // 设置页的 NavHost 此刻还没组合（当前在下载 Tab），直接 navigate 会命中
-                    // 「Navigation graph has not been set」。走跨 Tab 跳转的正规路子：
-                    // 先切到设置 Tab，由 SettingsTab 挂载后消费 settingsDeepLink。
+                    // 设置页的 NavHost 此时尚未组合（当前在下载 Tab），直接 navigate 会触发
+                    // 「Navigation graph has not been set」异常。采用跨 Tab 跳转的标准方式：
+                    // 先切换到设置 Tab，由 SettingsTab 挂载后消费 settingsDeepLink。
                     AppState.tab = AppState.TAB_SETTINGS
                     AppState.settingsDeepLink = "download"
                 }) { Text("去设置选择") }

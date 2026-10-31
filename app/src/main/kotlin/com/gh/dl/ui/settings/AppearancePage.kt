@@ -1,6 +1,6 @@
 package com.gh.dl.ui.settings
 
-// 设置「外观」二级页：跟随系统 / 浅色 / 深色 三选一，写入 SharedPreferences(theme_mode) 并实时切换配色。
+// 设置「外观」二级页：跟随系统 / 浅色 / 深色三选一，写入 SharedPreferences(theme_mode) 并实时切换配色。
 import com.gh.dl.ui.*
 
 import androidx.compose.foundation.clickable
@@ -36,15 +36,15 @@ import com.gh.dl.data.Settings
 
 /**
  * 外观设置：三选一（跟随系统 / 浅色 / 深色）。
- * 选中即写入 [com.gh.dl.data.Settings] 的 theme_mode，并同步 [com.gh.dl.ui.AppState.themeMode]，
- * [com.gh.dl.ui.theme.GhTheme] 实时读取该状态重绘配色，立即生效、无需重启 App。
+ * 选中后写入 [com.gh.dl.data.Settings] 的 theme_mode，并同步 [com.gh.dl.ui.AppState.themeMode]，
+ * [com.gh.dl.ui.theme.GhTheme] 实时读取该状态重绘配色，立即生效，无需重启应用。
  */
 @Composable
 fun AppearancePage(onBack: () -> Unit) {
     val ctx = LocalContext.current
 
-    // 「浅色」是出厂默认（用户第八轮明确要求：这个 App 默认浅色），
-    // 界面上标出来，免得用户以为默认是「跟随系统」
+    // 「浅色」为出厂默认主题，
+    // 界面上予以标注，避免用户误以为默认为「跟随系统」
     val options = listOf(
         "light" to "浅色模式",
         "dark" to "深色模式",
@@ -102,15 +102,12 @@ fun AppearancePage(onBack: () -> Unit) {
         }
 
         CollapsibleNote(
-            "关于切换与启动时的配色（点击展开）",
-            "切换后立即在整个 App 生效，已打开的页面也会跟着变，不需要重启。\n" +
-                "· 底色、状态栏图标、底部导航条三处同一帧一起翻色（以前只有正文翻，" +
-                "底下露出来的还是上一套颜色，看着像「切换瞬间有残影」）；\n" +
-                "· 冷启动时 App 会**先**读一次这里的设置再画第一帧，所以不会" +
-                "「先进来是深色、然后才变浅色」；\n" +
-                "· 出厂默认是「浅色模式」，不是跟随系统 —— 想跟着系统自动变的选第三项。\n" +
-                "· 「跟随系统」下，系统切换深浅色会重启本页面（Android 的常规行为），" +
-                "这一瞬间的颜色以切换后的设置为准。"
+            "主题与启动配色",
+            "切换后立即全应用生效，已打开页面同步更新，无需重启。\n" +
+                "· 底色、状态栏图标、底部导航条在同一帧内更新；\n" +
+                "· 冷启动先读取本设置再渲染首帧，不出现先深后浅的过渡；\n" +
+                "· 出厂默认为浅色，如需随系统切换请选择「跟随系统」；\n" +
+                "· 「跟随系统」下系统切换深浅色时本页重建（Android 常规行为），重建后的颜色以切换后的设置为准。"
         )
     }
 }

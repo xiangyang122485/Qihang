@@ -3,6 +3,7 @@ package com.gh.dl.ui.theme
 import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -15,10 +16,10 @@ import androidx.core.view.WindowCompat
 import com.gh.dl.ui.AppState
 
 /**
- * 窗口底色（与 res/values/colors.xml 的 gh_window_bg / gh_window_bg_dark 是同一组值）。
- * 这里再写一份是因为切深浅色时要**用代码**改窗口底色（XML 那份只在启动时生效一次），
- * 两处必须一字不差，否则 App 内切完深浅色、窗口底色却停在另一套配色上。
- * 改动任一处都要同步另一处。
+ * 窗口底色（与 res/values/colors.xml 中的 gh_window_bg / gh_window_bg_dark 为同一组值）。
+ * 此处重复定义的原因：切换深浅色时需由代码修改窗口底色，XML 定义仅在启动时生效一次。
+ * 两处取值必须完全一致，否则界面配色与窗口底色会不一致。
+ * 修改任一处需同步另一处。
  */
 private const val WINDOW_BG_LIGHT = 0xFFFAFAFA.toInt()
 private const val WINDOW_BG_DARK = 0xFF0F1419.toInt()
@@ -92,13 +93,12 @@ private val GitHubDark = darkColorScheme(
 )
 
 /**
- * 深色外观的**唯一口径**（纯函数版，界面线程与 Activity 生命周期都能调）。
+ * 深色外观判定的唯一实现（纯函数，界面线程与 Activity 生命周期均可调用）。
  *
- * 为什么不能只有下面那个 @Composable 版本：MainActivity 在 setContent **之前**就要决定
- * 用哪套窗口主题（这是修「进 App 一瞬间闪黑」的关键 —— 首帧就得是最终配色），
- * 那一刻还没有 Composition，拿不到 isSystemInDarkTheme()，只能自己读 Configuration。
- * 两边必须是同一个 when 分支，否则「窗口底色按 A 判断、Compose 配色按 B 判断」，
- * 又会出现一帧错色 —— 正是要修的那个问题。
+ * 除下方的 @Composable 版本外仍需本函数的原因：MainActivity 在 setContent 之前
+ * 就要确定窗口主题，此时尚无 Composition，无法调用 isSystemInDarkTheme()，
+ * 只能读取 Configuration。首帧即需使用最终配色，否则会先渲染一帧错误配色。
+ * 两个判定入口必须采用同一分支逻辑，避免窗口底色与 Compose 配色依据不同而错色。
  */
 fun isDarkMode(mode: String, systemNight: Boolean): Boolean = when (mode) {
     "light" -> false
@@ -111,31 +111,34 @@ fun systemIsNight(cfg: Configuration): Boolean =
     cfg.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
 /**
- * 当前是否深色外观：与 [GhTheme] 选配色用同一份判断，避免各处自己调
- * isSystemInDarkTheme() —— 那个只看系统设置，用户在「设置 → 外观」里强制
- * 选浅色/深色时就会算错（颜色跟着系统、配色跟着 App，两边不一致）。
+ * 当前是否为深色外观：与 [GhTheme] 采用同一判定逻辑。
+ * 不应在各处直接调用 isSystemInDarkTheme()：该函数仅反映系统设置，
+ * 当用户在「设置 → 外观」中强制选择浅色或深色时，其结果与实际配色不一致。
  */
 @Composable
 fun isDarkTheme(): Boolean = isDarkMode(AppState.themeMode, isSystemInDarkTheme())
 
 /**
- * 把「窗口底色 + 状态栏图标」一次到位地切到 [dark] 对应的配色。
+ * 将窗口底色与状态栏图标一并切换为 [dark] 对应的配色。
  *
- * 这两件事必须**同时**做，而且要跟着 Compose 的新配色同一帧做：
- *  - 窗口底色是 Compose 内容**背后**那张画布。内容没铺满的地方（卡片圆角外、
- *    浏览页那个 setBackgroundColor(TRANSPARENT) 的 WebView、下拉回弹露出的边缘）
- *    显示的就是它。原来它一直是 XML 里的默认值，App 内切深浅色时根本没人改它，
- *    于是「上面已经变白、底下露出来的还是深色」—— 用户说的**切换瞬间有残影**就是这个。
- *  - 状态栏图标是窗口属性，Compose 换配色换不到它，只能显式设。
- * 原先它只在 SideEffect 里设：SideEffect 跑在这一次组合**之后**，所以图标会比正文
- * 晚一帧翻色；这里和底色一起设，两处同一帧完成。
+ * 两项设置必须同时执行，且与 Compose 的新配色处于同一帧：
+ *  - 窗口底色位于 Compose 内容之下，内容未覆盖的区域（卡片圆角外、
+ *    浏览页中 setBackgroundColor(TRANSPARENT) 的 WebView、下拉回弹露出的边缘）
+ *    显示该颜色。该值不随 Compose 配色变化，App 内切换深浅色时若不更新，
+ *    导致切换后上下区域颜色不一致，即界面残影的成因。
+ *  - 状态栏图标颜色属于窗口属性，不随 Compose 配色变化，需显式设置。
+ * 需与底色在同一调用中设置：SideEffect 在本次组合之后执行，图标会比正文晚一帧变色。
  */
+@Suppress("DEPRECATION")
 fun applyWindowColors(activity: Activity, dark: Boolean) {
     val w = activity.window
     w.setBackgroundDrawable(ColorDrawable(if (dark) WINDOW_BG_DARK else WINDOW_BG_LIGHT))
-    // 系统导航条（底部那一条）同样不会跟着 Compose 换色。原来完全不设，
-    // 于是 App 内切深色后底部还留一条浅色 —— 也是「残影」的一部分。
-    w.navigationBarColor = if (dark) NAV_BG_DARK else NAV_BG_LIGHT
+    // 系统导航条颜色同样不随 Compose 配色变化，需一并设置，
+    // 否则 App 内切换深色后导航条仍为浅色。
+    // Android 15（API 35）起强制边到边并忽略该属性，仅在低版本设置，避免无效调用。
+    if (Build.VERSION.SDK_INT < 35) {
+        w.navigationBarColor = if (dark) NAV_BG_DARK else NAV_BG_LIGHT
+    }
     val c = WindowCompat.getInsetsController(w, w.decorView)
     c.isAppearanceLightStatusBars = !dark
     runCatching { c.isAppearanceLightNavigationBars = !dark }
@@ -143,15 +146,15 @@ fun applyWindowColors(activity: Activity, dark: Boolean) {
 
 @Composable
 fun GhTheme(content: @Composable () -> Unit) {
-    // 外观模式：跟随系统 / 浅色 / 深色。AppState.themeMode 改变即触发重组，立即切换无需重启
+    // 外观模式：跟随系统 / 浅色 / 深色。AppState.themeMode 变化即触发重组，切换即时生效，无需重启
     val dark = isDarkTheme()
-    // 状态栏图标颜色：窗口属性，Compose 换配色换不到它。原来只在 values/ 写死
-    // windowLightStatusBar=true，用户在 App 内选「深色」时就是深底+深图标，时间/电量看不见。
-    // 这里按实际的 dark 结果设置，所以「跟随系统 / 强制浅色 / 强制深色」三种都对。
+    // 状态栏图标颜色属于窗口属性，不随 Compose 配色变化：仅在 values/ 中固定
+    // windowLightStatusBar=true，用户在 App 内选择「深色」时会出现深色背景配深色图标，
+    // 故按实际的 dark 结果设置，三种外观模式均正确。
     val ctx = LocalContext.current
     SideEffect {
         val act = ctx as? Activity ?: return@SideEffect
-        // 底色与状态栏图标**同一帧**跟着新配色走（缺底色就是「切深浅色有残影」的根因）
+        // 底色与状态栏图标在同一帧随新配色更新；未更新底色是切换深浅色出现残影的直接原因
         applyWindowColors(act, dark)
     }
 

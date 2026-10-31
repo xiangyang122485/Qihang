@@ -1,6 +1,6 @@
 package com.gh.dl.ui.settings
 
-// 阶段 4「设置 Tab 去重重构」：克隆分组页。末尾增加「SSH 密钥管理」入口（设置里唯一的 SSH 入口）。
+// 设置 Tab 去重重构：克隆分组页。末尾增加「SSH 密钥管理」入口（设置中唯一的 SSH 入口）。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -66,8 +66,8 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                     Column(Modifier.weight(1f)) {
                         Text("克隆选项（总开关）", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         Text(
-                            if (vmSettings.cloneOn) "已开启 · 使用下方详细设置"
-                            else "已关闭 · 克隆用最稳默认方式（JGit SSH 直连，不自动拉 LFS）",
+                            if (vmSettings.cloneOn) "已开启 · 详见下方设置"
+                            else "已关闭 · 默认方式（JGit SSH 直连，不拉取 LFS）",
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -78,13 +78,13 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(6.dp))
                 CollapsibleNote(
-                    "这一档管什么（点击展开）",
-                    "克隆公开源码仓库时的行为，仅作用于克隆，不影响 Release / raw 下载。"
+                    "本组设置说明",
+                    "仅作用于公开仓库的整仓克隆，不影响 Release 与 raw 下载。"
                 )
                 if (!vmSettings.cloneOn) {
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "（总开关关闭时，下面这些设置暂不生效。）",
+                        "总开关关闭时以下设置不生效。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.warning
                     )
                 }
@@ -98,7 +98,7 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text("自动拉取 Git LFS 大文件", fontSize = 13.sp)
-                        Text("JGit 默认只拿到指针，开启后自动替换成真实文件", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("JGit 默认仅获取指针文件，开启后替换为真实文件", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = vmSettings.lfsOn, onCheckedChange = {
                         vmSettings.lfsOn = it
@@ -108,10 +108,10 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                 Spacer(Modifier.height(6.dp))
                 Text("克隆引擎", fontSize = 13.sp)
                 CollapsibleNote(
-                    "克隆引擎说明（点击展开）",
-                    "JGit：纯 Java，SSH 直连 GitHub（22 端口，绕过 DNS 污染），最稳。\n" +
-                        "libgit2：原生 C 引擎，走 HTTPS（经加速代理前缀触达 GitHub），大仓库更快；" +
-                        "需开启「加速代理」才能连上（设备直连 443 被重置）。"
+                    "克隆引擎说明",
+                    "JGit：纯 Java 实现，SSH 直连 GitHub 22 端口，兼容性最好。\n" +
+                        "libgit2：原生 C 引擎，走 HTTPS，需开启下载加速前缀（443 在部分网络被重置），" +
+                        "大仓库速度较快，仅内置 arm64 二进制。"
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
@@ -134,10 +134,10 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Text("libgit2 通道（仅 libgit2 引擎生效）", fontSize = 13.sp)
                 CollapsibleNote(
-                    "libgit2 通道说明（点击展开）",
-                    "HTTPS：走 443，经加速代理前缀触达 GitHub（设备直连 443 被重置）；公开仓库匿名克隆。\n" +
-                        "SSH：走 22 端口直连 GitHub 官方真实 IP，绕过 DNS 污染与 TLS 重置，最稳；" +
-                        "需先在「SSH 密钥」里生成并把手指公钥加到 GitHub。SSH 凭证绝不经过任何代理或中转。"
+                    "libgit2 通道说明",
+                    "HTTPS：443 端口，经下载加速前缀触达 GitHub，公开仓库匿名克隆。\n" +
+                        "SSH：22 端口直连 GitHub 官方 IP；需先在「SSH 密钥管理」生成密钥并将公钥添加至 GitHub，" +
+                        "凭证不经任何代理或中转。"
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
@@ -160,11 +160,11 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
             }
         }
 
-        // ---- SSH 密钥管理（设置里唯一的 SSH 入口） ----
+        // ---- SSH 密钥管理（设置中唯一的 SSH 入口） ----
         NavRow(
             icon = Icons.Filled.Key,
             title = "SSH 密钥管理",
-            subtitle = if (keyReady) "已生成 · 手机可独立克隆" else "未配置 · 点这里生成",
+            subtitle = if (keyReady) "已生成 · 本机可独立克隆" else "未配置 · 点击生成",
             onClick = { nav.navigate(SettingsRoute.Ssh.route) }
         )
     }

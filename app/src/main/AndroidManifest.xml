@@ -4,28 +4,46 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!-- 后台下载锁屏/息屏也能跑完：前台服务 + 唤醒锁 -->
+    <!-- 触摸屏非必需项：Chromebook（Android 容器）、部分平板与折叠屏无触摸屏，
+         不声明该 uses-feature 时商店会按「必需」过滤，导致这些设备无法安装 -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.faketouch" android:required="false" />
+
+    <!-- 屏支持范围：手机、平板、折叠屏、车机与 Chromebook 均允许安装，
+         界面由 Compose 按可用宽度自适应 -->
+    <supports-screens
+        android:smallScreens="true"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true"
+        android:anyDensity="true" />
+
+    <!-- 用于后台下载：前台服务保证锁屏/息屏时下载继续执行，唤醒锁防止 CPU 休眠 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- 开机后自动续传（可选）：仅登记接收广播，不强制 -->
+    <!-- 该权限当前未被代码使用，保留用于后续开机续传功能实现 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- 下载的是 APK 时，点「安装」才检查未知来源安装权限（不默认申请） -->
+    <!-- 下载完成的 APK 通过系统安装器安装（下载页「安装」按钮）；
+         安装未知来源应用前会先跳转系统授权页 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- 私钥/凭据在 AndroidKeyStore 里，密钥不可导出：一旦整机备份再还原到新环境，
-         keystore 里的引用会失效，SSH 钥匙直接坏掉；App 私有目录被明文备份也等于把
-         凭据交给云备份。故整体关闭自动备份，跨设备迁移请在 App 内重新生成钥匙。 -->
+    <!-- 密钥材料（key material）与 AndroidKeyStore 绑定，不可导出。
+         整机备份还原至新环境后，KeyStore 中的引用将失效，SSH 密钥无法恢复。
+         同时，应用私有目录的明文备份等同于将凭据暴露给云备份服务。
+         因此关闭自动备份（allowBackup=false）与完整备份（fullBackupContent=false）。
+         跨设备迁移需在应用内重新生成密钥。 -->
     <application
+        android:name=".App"
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.GhDl"
-        android:extractNativeLibs="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
@@ -33,6 +51,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale"
             android:theme="@style/Theme.GhDl">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -44,14 +63,34 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
             <!-- 仅接收 github.com / www.github.com 的仓库深链（路径至少两段：/owner/repo） -->
+            <!-- 每个 host 单独一条 intent-filter：同一条中的多个 <data> 会被系统按属性并集匹配，
+                 两个 host 写在一条里容易在后续增改时误扩匹配范围 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="github.com" android:pathPattern="/.*/.*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="www.github.com" android:pathPattern="/.*/.*" />
             </intent-filter>
         </activity>
+
+        <!-- 下载文件的受控访问入口：仅暴露应用外部文件目录（含「Download」子目录），
+             供系统安装器安装 APK、或由其他应用打开下载的文件。
+             authority 使用 ${applicationId}，独立包名构建（com.gh.dl.mod）时不会与官方版冲突。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name=".CloneService"

@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      ============ 为什么这里要写死窗口底色（第八轮：进 App 一瞬间闪黑）============
-      原来两个配置只写了 statusBarColor / windowLightStatusBar，**没写 android:windowBackground**，
-      于是窗口底色取父主题 android:Theme.Material 的默认值——它在 night 资源里是深灰。
-      结果：系统开了深色、而 App 用浅色时，Android 先按「系统配置」画一帧启动窗口（深色），
-      等 Compose 第一帧出来才变白 —— 用户看到的「进 App 一瞬间是深色，然后切回浅色」就是这个。
+      ============ 窗口底色显式声明（解决冷启动闪黑问题）============
+      原两个配置仅声明 statusBarColor / windowLightStatusBar，未声明 android:windowBackground，
+      导致窗口底色取父主题 android:Theme.Material 的默认值，夜间资源中为深灰色。
+      结果：系统启用深色模式而应用使用浅色时，Android 先按系统配置绘制启动窗口（深色），
+      待 Compose 首帧渲染后变为浅色，用户观察到「进入应用瞬间为深色后切换为浅色」。
 
-      修法分两条，缺一不可：
-        1) 这里把底色写死，并且**白天/夜间两套资源都用浅色**（见 values-night/themes.xml 的说明），
-           让系统那张「启动预览窗」与 App 的默认外观一致；
-        2) MainActivity 在 setContent 之前同步读出用户存的外观选择，再 setTheme +
-           直接改 window 底色，所以 App 自己的第一帧就已经是最终配色，不存在「先浅后深」。
+      修复方案分两条，缺一不可：
+        1) 此处显式声明底色，且白天与夜间两套资源均使用浅色（见 values-night/themes.xml 说明），
+           使系统启动预览窗与应用默认外观一致；
+        2) MainActivity 在 setContent 之前同步读取用户存储的外观选择，再调用 setTheme 并
+           直接修改 window 底色，因此应用首帧即为最终配色，不存在「先浅后深」。
 
-      这里**没有**顺手关掉预画窗口（android:windowDisablePreview）：关掉确实能做到
-      「一帧错色都没有」，但冷启动时 Launcher 画面会多留几百毫秒，用户会觉得「点开没反应」，
-      与这一轮「滑动/切页发涩」的观感问题叠在一起更糟。两害相权：本 App 默认浅色，
-      浅色预览窗对绝大多数启动是对的；只有「在系统深色下把外观手动选成深色」的用户
-      会在冷启动看到一次浅→深过渡，而他 App 内的每次切页都是对的。
+      此处未关闭预画窗口（android:windowDisablePreview）：关闭虽可做到
+      「无错色帧」，但冷启动时 Launcher 画面会多停留数百毫秒，用户感知为「点击无响应」，
+      与滑动/切页卡顿的观感问题叠加更为不利。权衡后：本应用默认浅色，
+      浅色预览窗对绝大多数启动场景正确；仅「在系统深色模式下手动选择深色外观」的用户
+      会在冷启动看到一次浅→深过渡，而其应用内每次切页均正确。
     -->
     <style name="Theme.GhDl" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
@@ -26,8 +26,8 @@
     </style>
 
     <!--
-      浅色：与 Compose 的 GitHubLight 对齐（底色 #FAFAFA，状态栏深色图标）。
-      这两套主题由 MainActivity 按**App 内的外观选择**（不是系统设置）在 setContent 之前挑一套。
+      浅色主题：与 Compose 的 GitHubLight 对齐（底色 #FAFAFA，状态栏深色图标）。
+      两套主题由 MainActivity 按应用内外观选择（非系统设置）在 setContent 之前选择其一。
     -->
     <style name="Theme.GhDl.Light" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
@@ -35,7 +35,7 @@
         <item name="android:windowBackground">@color/gh_window_bg</item>
     </style>
 
-    <!-- 深色：底色与 GitHubDark.background 对齐，状态栏改浅色图标 -->
+    <!-- 深色主题：底色与 GitHubDark.background 对齐，状态栏改为浅色图标 -->
     <style name="Theme.GhDl.Dark" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>

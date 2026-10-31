@@ -70,8 +70,8 @@ fun SearchTab() {
                     Text("搜索源", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // 选中即落盘：第五轮删掉了「设置 → 网络」那个统一保存按钮，
-                        // 所有设置都改成就地保存，不然这里换的源重启就丢。
+                        // 选中即持久化：当前实现移除了「设置 → 网络」中的统一保存按钮，
+                        // 所有设置改为就地保存，否则此处切换的搜索源在重启后丢失。
                         listOf("github" to "GitHub 源", "foreign" to "外国源", "domestic" to "国内源")
                             .forEach { (id, label) ->
                                 FilterChip(
@@ -94,7 +94,7 @@ fun SearchTab() {
                             Text("启用 GitHub 索引", fontWeight = FontWeight.Medium, fontSize = 13.sp)
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                "开启后搜索 api.github.com，关闭后只搜国内/外国源",
+                                "开启后搜索 api.github.com，关闭后仅搜索国内源与外国源",
                                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -108,7 +108,7 @@ fun SearchTab() {
                     }
                     if (vmSearch.searchSource == "domestic") {
                         Spacer(Modifier.height(10.dp))
-                        Text("优先镜像站（点选，结果将走它下载 Release）：", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("优先镜像站（选中后 Release 经该镜像站下载）：", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(6.dp))
                         Row(
                             Modifier.horizontalScroll(rememberScrollState()),
@@ -127,19 +127,19 @@ fun SearchTab() {
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "国内源 = GitHub 索引（标「国内镜像可下」，下载走镜像站拿 Release）+ 国内代码托管 Gitee / GitCode。" +
-                                "高校镜像站没有按关键词搜仓库的 API，所以 GitHub 部分复用其官方索引。",
+                            "国内源 = GitHub 索引（标注「国内镜像可下」，Release 经镜像站下载）+ Gitee / GitCode。" +
+                                "高校镜像站无关键词搜索 API，GitHub 部分复用官方索引。",
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "GitCode 需要在设置里配 access_token，未配置时自动跳过（不会发出去碰 401）。",
+                            "GitCode 需在设置中配置 access_token，未配置时跳过该源。",
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     if (vmSearch.searchSource == "foreign") {
                         Spacer(Modifier.height(6.dp))
-                        Text("外国源 = GitLab.com + Codeberg（均为合法外国代码托管，自带公开搜索 API）。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("外国源 = GitLab.com + Codeberg（境外代码托管平台，自带公开搜索 API）。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -195,7 +195,7 @@ fun SearchTab() {
         }
 
         // ---- 结果 ----
-        // 同样给稳定 key：搜索是分页/换关键词追加的，没有 key 时整列卡片会重排
+        // 同样指定稳定 key：搜索结果为分页/换关键词追加模式，未指定 key 时整列卡片会重排
         items(vmSearch.searchResults, key = { "res-" + it.fullName }) { h ->
             SearchResultCard(h)
         }
@@ -254,7 +254,7 @@ private fun SearchResultCard(h: Search.Hit) {
                 }
             }
             Spacer(Modifier.height(4.dp))
-            // 描述是用户自填，常有超长或整块乱码（GitHub API 原样返回），统一清洗后再显示
+            // 描述为用户自填内容，常出现超长或编码异常（GitHub API 原样返回），统一清洗后再显示
             val desc = cleanDesc(h.desc)
             Text(
                 if (desc.isNotBlank()) desc else "暂无描述",
@@ -273,7 +273,7 @@ private fun SearchResultCard(h: Search.Hit) {
             ).filter { it.isNotBlank() }.joinToString("  ·  ")
             Text(meta, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
-            // 与解析器页一致：下载 / 浏览（进浏览页看仓库主页）/ 复制直链 / 分享；点卡片本体仍「查看并解析」。
+            // 与解析器页一致：下载 / 浏览（进入浏览页查看仓库主页）/ 复制直链 / 分享；点击卡片本体仍为「查看并解析」。
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -330,7 +330,7 @@ private fun SearchResultCard(h: Search.Hit) {
                         )
                     }
                 }
-                Text("点卡片查看详情 →", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("点击卡片查看详情", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

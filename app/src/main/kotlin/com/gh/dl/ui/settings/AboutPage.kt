@@ -1,6 +1,6 @@
 package com.gh.dl.ui.settings
 
-// 阶段1 纯拆分：原 SettingsTab.kt 的「AboutPage」二级页。逻辑零改动。
+// 自原 SettingsTab.kt 拆分而来的「关于」二级页。业务逻辑未作改动。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -67,56 +67,54 @@ fun AboutPage(onBack: () -> Unit) {
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("这个 App 做什么", fontWeight = FontWeight.Bold)
+                Text("功能概述", fontWeight = FontWeight.Bold)
                 Text(
-                    "粘贴 GitHub 公开仓库链接 → 列出仓库的 Release 软件 → 下载；" +
-                        "同时提供开源源码下载和整仓克隆。只用于下载公开开源资源。",
+                    "粘贴 GitHub 公开仓库链接，列出其 Release 产物供下载，并支持源码包下载与整仓克隆。" +
+                        "仅用于下载公开开源资源。",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(6.dp))
-                Text("它连的是什么", fontWeight = FontWeight.Bold)
+                Text("网络连接目标", fontWeight = FontWeight.Bold)
                 Text(
-                    "① GitHub 官方 API / codeload（https 直连，不通就跳过）\n" +
+                    "① GitHub 官方 API / codeload（HTTPS 直连，不可达时自动跳过）\n" +
                         "② 国内镜像站同步的公开 Release 产物（中科大 / 南大 / 清华 / 华为云 / 北京理工 / 上海交大）\n" +
                         "③ jsDelivr 公共 CDN 上的仓库源码\n" +
                         "④ GitHub 官方 SSH 服务（22 端口，直连官方真实 IP）\n" +
                         "⑤ 加速代理（可选，默认关闭）：ghproxy 类第三方反向代理前缀\n" +
-                        "可选：你自己填的 GitHub Token / HTTP 代理。",
+                        "可选配置：用户自行填写的 GitHub Token / HTTP 代理。",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(6.dp))
-                Text("它不做什么", fontWeight = FontWeight.Bold)
+                Text("功能边界与安全", fontWeight = FontWeight.Bold)
                 Text(
-                    "不内置任何翻墙、隧道能力，也不上传你的密钥。\n" +
-                        "不提供网页浏览、账号登录、代码推送等能力，只用于下载公开开源资源。\n" +
-                        "克隆只走 GitHub 官方 SSH 服务（22 端口），不经过任何代理或中转。\n" +
-                        "加速代理只转发公开开源资源：你的 GitHub Token 只发给 GitHub 官方域名，" +
-                        "绝不经过镜像 / 代理服务器；不支持私有仓库与 SSH 协议。\n" +
-                        "开启加速代理后下载经第三方服务器，它可能替换文件内容——" +
-                        "所以默认强制 SHA256 校验；是否使用请自行评估风险。\n" +
-                        "SSH 私钥只存在手机本地应用目录，公钥需要你手动加到 GitHub。",
+                    "不含隧道、代理或第三方中转功能；默认仅访问 GitHub 官方端点，不上传 Token 与 SSH 私钥。\n" +
+                        "不提供网页浏览、账号登录、代码推送功能，仅用于下载公开开源资源。\n" +
+                        "克隆经 GitHub 官方 SSH 服务（22 端口）直连，不经代理或中转；不支持私有仓库。\n" +
+                        "加速代理仅转发公开开源资源，GitHub Token 不经镜像站或代理服务器。\n" +
+                        "开启加速代理后下载流量经第三方中转，该服务器可能替换文件内容，因此默认启用 SHA256 校验。\n" +
+                        "SSH 私钥仅存储于本机应用目录，公钥需手动添加至 GitHub。",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(6.dp))
                 Text("文件权限", fontWeight = FontWeight.Bold)
                 Text(
-                    "只申请网络权限。写文件用系统文件授权（SAF）：" +
-                        "你亲手挑哪个文件夹，App 就只有那一个文件夹的权限。",
+                    "仅申请网络权限。文件写入采用系统文件授权框架（SAF）：" +
+                        "用户选择授权文件夹后，应用仅获得该文件夹的读写权限。",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(6.dp))
-                Text("校验建议", fontWeight = FontWeight.Bold)
+                Text("完整性校验", fontWeight = FontWeight.Bold)
                 Text(
-                    "下载完拿 SHA256 比对；镜像通道的「校验」按钮可复制官方校验值，" +
-                        "开启加速代理时 App 会自动比对并提示是否被篡改。",
+                    "下载完成后可比对 SHA256：镜像通道的「校验」按钮复制官方校验值，" +
+                        "开启加速代理时应用自动比对并提示内容是否被替换。",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
         Spacer(Modifier.height(6.dp))
-        // 版本号读 BuildConfig（唯一真值源在 app/build.gradle.kts），
-        // 不再写死字面量 —— 原来这里写死 "版本 1.0"，改版本号时界面不会跟着变。
+        // 版本号读取自 BuildConfig（唯一真值源位于 app/build.gradle.kts），
+        // 不再使用硬编码字面量。
         Text(
             "版本 " + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）" +
                 (if (BuildConfig.DEBUG) " · 验证包" else "") +

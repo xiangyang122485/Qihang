@@ -1,7 +1,7 @@
 package com.gh.dl.ui.parser
 
-// 本文件从原 GhApp.kt 纯拆分而来（阶段1：按页拆分巨型文件，零逻辑改动）。
-// 解析页相关的所有 composable 与私有辅助函数集中于此；函数签名、调用关系、业务逻辑一字未改。
+// 自原 GhApp.kt 拆分而来（按页面拆分大型文件，业务逻辑未作改动）。
+// 解析页相关的全部 composable 与私有辅助函数集中于此；函数签名、调用关系、业务逻辑保持不变。
 // 跨页共享符号（AppState、动作函数、GhCard、SectionHeader、SshFallbackCard、CollapsibleNote、
 // SelItem、CloneJob 等）均位于 com.gh.dl.ui，通过下方 star import 引入。
 import com.gh.dl.ui.*
@@ -74,8 +74,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 解析器页「批量下载」多选时，在每个文件行前方加一个复选框。
- * 进入多选模式才显示；勾选状态写入 [LocalParserVM.current.parserSel]（以 url 去重）。
+ * 解析器页「批量下载」多选模式下，在每个文件行前方添加复选框。
+ * 仅在多选模式下显示；勾选状态写入 [LocalParserVM.current.parserSel]（以 URL 去重）。
  */
 @Composable
 private fun SelLead(item: SelItem, content: @Composable RowScope.() -> Unit) {
@@ -98,12 +98,12 @@ private fun SelLead(item: SelItem, content: @Composable RowScope.() -> Unit) {
     }
 }
 
-// 批量下载的全选 / 下载 / 取消 已移至解析器页顶栏（固定置顶），不再用底部操作栏。
+// 批量下载的全选 / 下载 / 取消操作已移至解析器页顶栏（固定置顶），不再使用底部操作栏。
 
 /**
  * 每个可下载文件行末尾的两个图标：复制直链 / 分享直链。
- * 直链是经过通道改写（官方/高校镜像/加速代理前缀）后的最终 URL，
- * 第三方下载器能直接吃 —— 内置引擎之外的一条兜底。
+ * 直链为经过通道改写（官方 / 高校镜像 / 加速代理前缀）后的最终 URL，
+ * 第三方下载器可直接使用，作为内置引擎之外的备选方案。
  */
 @Composable
 private fun LinkActions(rawUrl: String) {
@@ -128,7 +128,7 @@ private fun LinkActions(rawUrl: String) {
     }
 }
 
-/** 线路切换的小按钮：选中显示绿色 ● */
+/** 线路切换按钮：选中时显示绿色 ● */
 @Composable
 private fun LineChip(id: String, label: String, ctx: Context) {
     val vmParser = LocalParserVM.current
@@ -180,9 +180,9 @@ fun ParserTab() {
                         leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(18.dp)) }
                     )
                     Spacer(Modifier.height(8.dp))
-                    // 原本一个整条「解析」按钮，现在拆成左右两半：
-                    //  红「解析」= 走 API 拉 Release / 源码树（本 App 的主功能）
-                    //  蓝「浏览」= 跳到「浏览」Tab，用内嵌页面看这个仓库
+                    // 原为单个「解析」按钮，当前拆分为左右两部分：
+                    //  红色「解析」= 通过 API 获取 Release / 源码树（应用核心功能）
+                    //  蓝色「浏览」= 跳转至「浏览」Tab，使用内嵌页面查看仓库
                     Row(Modifier.fillMaxWidth()) {
                         Button(
                             onClick = { if (vmParser.input.isNotBlank()) vmParser.doLoad(ctx, vmParser.input) },
@@ -207,8 +207,8 @@ fun ParserTab() {
                 }
             }
         }
-        // 解析历史（第六轮新增）：点一条就填回输入框并重新解析。
-        // 放在输入框正下方而不是页面底部，因为用户找它的时机就是「刚打开输入框的时候」。
+        // 解析历史：点击条目后填入输入框并重新解析。
+        // 放置在输入框正下方而非页面底部，便于用户在输入时快速访问。
         if (vmParser.history.isNotEmpty()) {
             item { HistoryCard() }
         }
@@ -254,7 +254,7 @@ fun ParserTab() {
                             Spacer(Modifier.height(4.dp))
                             val mirrors = MirrorManager.list(ctx)
                             if (mirrors.isEmpty()) {
-                                Text("还没有镜像源，去「设置→镜像源管理」添加。", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                Text("暂无镜像源，请前往「设置 → 网络 → 镜像源管理」添加。", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                             } else {
                                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                                     mirrors.forEach { src ->
@@ -286,8 +286,11 @@ fun ParserTab() {
                 Text(
                     "网络：" + vmParser.netSummary,
                     fontSize = 11.sp,
-                    color = if (vmParser.netSummary.contains("可用")) MaterialTheme.colorScheme.secondary
-                    else MaterialTheme.colorScheme.warning
+                    color = when {
+                        vmParser.netSummary.contains("可用") -> MaterialTheme.colorScheme.secondary
+                        vmParser.netSummary.contains("正在") -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.warning
+                    }
                 )
             }
         }
@@ -327,10 +330,71 @@ fun ParserTab() {
                     }
                 }
             }
-            // 用 items(..., key=) 而不是 forEach{item{}}：
-            // 「批量下载」勾选、筛选开关、进度刷新都会让这一段重算，没有 key 时
-            // Compose 只能按下标对齐 —— 列表长度一变（筛出/滤掉某个 Release），
-            // 后面的卡片会整片错位重排，表现就是滚动时突然跳一下、勾选态串到别的卡上。
+            // Release 与仓库信息分开请求：列表未返回、请求失败、仓库无发布、筛选后为空
+            // 四种状态分别显示，避免把网络延迟误判为功能缺失
+            item {
+                when {
+                    vmParser.releasesLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "正在获取 Release 列表…",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    vmParser.releasesError.isNotBlank() -> Column {
+                        Text(
+                            "Release 获取失败：${vmParser.releasesError}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        // 重试必须是「刷新整个仓库」，而不是只补拉 Release：
+                        // 仓库信息与 Release 可能经不同线路返回，单独重拉 Release 容易继续失败
+                        TextButton(onClick = { vmParser.refreshParser(ctx) }) {
+                            Icon(
+                                Icons.Filled.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("重新获取仓库", fontSize = 12.sp)
+                        }
+                    }
+                    vmParser.releases.isEmpty() -> Column {
+                        Text(
+                            "该仓库未发布 Release。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(onClick = { vmParser.refreshParser(ctx) }) {
+                            Text("刷新仓库", fontSize = 12.sp)
+                        }
+                    }
+                    else -> {
+                        val shown = vmParser.releases.count { rel ->
+                            rel.assets.any { a ->
+                                vmParser.filter == "all" || osOf(a.name) == vmParser.filter
+                            }
+                        }
+                        if (shown == 0) {
+                            Text(
+                                "当前筛选下没有可下载文件。",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+            // 使用 items(..., key=) 而非 forEach{item{}}：
+            // 「批量下载」勾选、筛选切换、进度刷新均会触发该段落重新计算，未指定 key 时
+            // Compose 仅按下标对齐，列表长度变化（筛出或滤掉某个 Release）会导致
+            // 后续卡片错位重排，表现为滚动时跳动或勾选状态串至其他卡片。
             items(vmParser.releases, key = { "rel-" + it.tag }) { rel ->
                 val assets = rel.assets.filter {
                     vmParser.filter == "all" || com.gh.dl.data.osOf(it.name) == vmParser.filter
@@ -402,23 +466,23 @@ private fun MirrorCard(mh: Mirror.Hit) {
                         )
                     }
                     TextButton(onClick = {
-                        // 校验值要现下现算（几十 MB 的文件算 SHA256 是秒级），必须在后台；
-                        // 但**必须有兜底**：原来这条裸线程没有异常出口，
-                        // 网络断了 / 镜像站返回怪东西 → 线程静悄悄死掉，用户点了「校验」什么也没发生。
+                        // 校验值需实时计算（数十 MB 文件的 SHA256 计算耗时秒级），必须在后台线程执行；
+                        // 异常处理：原裸线程缺少异常出口，
+                        // 网络中断或镜像站返回异常响应时线程静默终止，用户点击「校验」后无任何反馈。
                         verifying(ctx, "校验值") { Mirror.sha256(mh, a.name) }
                     }) { Text("校验", fontSize = 12.sp) }
                     Spacer(Modifier.width(4.dp))
                     if (!vmParser.parserMultiSelect) {
                         Button(onClick = {
-                            Thread {
-                                // 校验值拿不到也照样下：runCatching 是必须的——
-                                // 原来 Mirror.sha256 一抛（断网、镜像站 500）这条线程就死在这儿，
-                                // MAIN.post 永远不执行，用户点「下载」表现为「按了没反应」。
+                            Threads.start("校验并下载") {
+                                // 即使校验值获取失败仍继续下载：runCatching 为必需，
+                                // 否则 Mirror.sha256 抛出异常（网络中断、镜像站 500）时线程终止，
+                                // MAIN.post 永不执行，用户点击「下载」表现为无响应。
                                 val h = runCatching { Mirror.sha256(mh, a.name) }.getOrNull()
-                                // startDownload 会写 job.running / AppState.tab / 下载列表，
-                                // 这些都是 Compose 状态，必须回主线程改。
+                                // startDownload 会写入 job.running / AppState.tab / 下载列表，
+                                // 这些均为 Compose 状态，必须回到主线程修改。
                                 MAIN.post { vmDownloads.startDownload(ctx, a.url, a.name, h, sizeHint = a.size) }
-                            }.start()
+                            }
                         }) { Text("下载") }
                     }
                     LinkActions(a.url)
@@ -426,18 +490,18 @@ private fun MirrorCard(mh: Mirror.Hit) {
             }
             Spacer(Modifier.height(6.dp))
             CollapsibleNote(
-                "说明（点击展开）",
-                "国内镜像站（中科大 / 南大 / 清华 / 华为云 / 北京理工 / 上海交大）同步了开源项目的 " +
-                    "Release 产物，默认不经过任何第三方中转。点「校验」可复制官方 sha256 值；" +
-                    "若你在「设置 → 网络通道」开启了加速代理，下载会经第三方转发，开启时默认强制比对校验值。"
+                "说明",
+                "国内镜像站（中科大 / 南大 / 清华 / 华为云 / 北京理工 / 上海交大）同步开源项目的 " +
+                    "Release 产物，默认不经第三方中转。点「校验」可复制官方 SHA256 值；" +
+                    "开启「设置 → 加速 → 下载加速」后下载经第三方转发，此时默认强制比对校验值。"
             )
         }
     }
 }
 
 /**
- * 国内镜像里「某一个版本」的卡片：列出该版本下的单个文件（APK/EXE/DEB/IPA…），
- * 每个文件一个「下载」按钮 —— 只取这一个文件，不克隆整个仓库。
+ * 国内镜像中单个版本的卡片：列出该版本下的各个文件（APK/EXE/DEB/IPA 等），
+ * 每个文件配备一个「下载」按钮，仅下载该文件，不克隆整个仓库。
  */
 @Composable
 private fun MirrorVersionCard(ver: String, hit: Mirror.Hit) {
@@ -457,7 +521,7 @@ private fun MirrorVersionCard(ver: String, hit: Mirror.Hit) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "下面每个文件可单独下载，不克隆仓库：",
+                "以下文件可单独下载：",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(6.dp))
@@ -476,11 +540,11 @@ private fun MirrorVersionCard(ver: String, hit: Mirror.Hit) {
                     Spacer(Modifier.width(4.dp))
                     if (!vmParser.parserMultiSelect) {
                         Button(onClick = {
-                            Thread {
-                                // 同上面镜像通道那个按钮：算不出校验值也要照样下
+                            Threads.start("校验并下载") {
+                                // 与上方镜像通道按钮逻辑一致：即使校验值获取失败仍继续下载
                                 val h = runCatching { Mirror.sha256(hit, a.name) }.getOrNull()
                                 MAIN.post { vmDownloads.startDownload(ctx, a.url, a.name, h, sizeHint = a.size) }
-                            }.start()
+                            }
                         }) { Text("下载") }
                     }
                     LinkActions(a.url)
@@ -540,7 +604,7 @@ private fun JsdCard() {
             }
             if (vmParser.jsdTree.size > 120) {
                 Text(
-                    "还有 ${vmParser.jsdTree.size - 120} 个文件未列出，用「打包下载整仓 ZIP」一次拿全",
+                    "还有 ${vmParser.jsdTree.size - 120} 个文件未列出，可使用「打包下载整仓 ZIP」一次获取全部",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -667,8 +731,8 @@ private fun ReleaseCard(
 /**
  * 「添加链接」第一层弹窗：选择链接来源。
  * - 添加链接：直接打开第二层解析弹窗（粘贴框留空）。
- * - 从文本文件选择：调起系统文件选择器，读到链接后打开第二层解析弹窗（粘贴框预填）。
- * - 从剪贴板选择：读剪贴板，有链接则打开第二层解析弹窗（粘贴框预填）。
+ * - 从文本文件选择：调起系统文件选择器，读取链接后打开第二层解析弹窗（粘贴框预填）。
+ * - 从剪贴板选择：读取剪贴板，若存在链接则打开第二层解析弹窗（粘贴框预填）。
  */
 @Composable
 fun AddLinkDialog() {
@@ -678,23 +742,23 @@ fun AddLinkDialog() {
     val fileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        // 用户选了文件：扫描其中 GitHub 链接 → 打开第二层解析弹窗（预填）
+        // 用户选择文件后：扫描其中 GitHub 链接 → 打开第二层解析弹窗（预填）
         if (uri != null) {
             val text = try {
-                ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText().orEmpty()
+                ctx.contentResolver.openInputStream(uri)?.use { it.reader().readText() }.orEmpty()
             } catch (e: Exception) { "" }
             val links = extractGithubLinks(text)
             if (links.isEmpty()) {
-                toast(ctx, "这个文件里没找到 GitHub 链接")
+                toast(ctx, "该文件中未找到 GitHub 链接")
                 vmParser.showAddLink = false
             } else {
                 vmParser.pendingInput = links.joinToString("\n") { "https://github.com/$it" }
                 vmParser.showAddLink = false
                 vmParser.showParseDialog = true
-                if (links.size > 1) toast(ctx, "识别到 ${links.size} 个链接，已放进粘贴框，可逐个解析")
+                if (links.size > 1) toast(ctx, "识别到 ${links.size} 个链接，已填入粘贴框，可逐个解析")
             }
         }
-        // 用户取消选择（uri==null）则保持第一层弹窗开着
+        // 用户取消选择（uri==null）则保持第一层弹窗开启
     }
 
     AlertDialog(
@@ -704,13 +768,13 @@ fun AddLinkDialog() {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("选择链接来源：", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(onClick = {
-                    // 手动粘贴：清空预填，直接进第二层解析弹窗
+                    // 手动粘贴：清空预填内容，直接进入第二层解析弹窗
                     vmParser.pendingInput = ""
                     vmParser.showAddLink = false
                     vmParser.showParseDialog = true
                 }) { Text("添加链接（手动粘贴）") }
                 OutlinedButton(onClick = {
-                    // 调起系统文件选择器；结果回来再决定
+                    // 调起系统文件选择器；返回结果后继续处理
                     fileLauncher.launch(arrayOf("text/*", "*/*"))
                 }) { Text("从文本文件选择") }
                 OutlinedButton(onClick = {
@@ -718,7 +782,7 @@ fun AddLinkDialog() {
                     val t = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
                     val s = parseSlug(t)
                     if (s == null) {
-                        toast(ctx, "剪贴板里没有 GitHub 链接")
+                        toast(ctx, "剪贴板中未找到 GitHub 链接")
                     } else {
                         vmParser.pendingInput = "https://github.com/$s"
                         vmParser.showAddLink = false
@@ -735,8 +799,8 @@ fun AddLinkDialog() {
 }
 
 /**
- * 「添加链接」第二层弹窗：链接粘贴框 + 解析按钮。
- * 点「解析」才真正拉取仓库内容；支持粘贴多行链接（取第一个有效）。
+ * 「添加链接」第二层弹窗：链接粘贴框与解析按钮。
+ * 点击「解析」后方开始拉取仓库内容；支持粘贴多行链接（取第一个有效链接）。
  */
 @Composable
 fun ParseDialog() {
@@ -749,7 +813,7 @@ fun ParseDialog() {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "把 GitHub 链接贴到下面，点「解析」拉取仓库内容：",
+                    "将 GitHub 链接粘贴至下方，点击「解析」拉取仓库内容：",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 OutlinedTextField(
@@ -760,7 +824,7 @@ fun ParseDialog() {
                     minLines = 2
                 )
                 Text(
-                    "支持仓库主页 / Release 页 / 单文件链接；可一次粘贴多个（每行一个），解析时取第一个有效链接。",
+                    "支持仓库主页、Release 页与单文件链接；可一次粘贴多个链接（每行一个），解析第一个有效链接。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -769,7 +833,7 @@ fun ParseDialog() {
             Button(onClick = {
                 val s = parseSlug(vmParser.pendingInput)
                 if (s == null) {
-                    toast(ctx, "没识别出 GitHub 链接")
+                    toast(ctx, "未识别出 GitHub 链接")
                 } else {
                     vmParser.input = "https://github.com/$s"
                     vmParser.showParseDialog = false
@@ -783,11 +847,12 @@ fun ParseDialog() {
     )
 }
 
-/** 从一段文本里提取所有 owner/repo（GitHub 链接形态） */
+private val GH_LINK = Regex("github\\.com[:/]+([A-Za-z0-9_.\\-]+)/([A-Za-z0-9_.\\-]+)")
+
+/** 从文本中提取所有 owner/repo（GitHub 链接格式） */
 private fun extractGithubLinks(text: String): List<String> {
     val out = LinkedHashSet<String>()
-    val re = Regex("github\\.com[:/]+([A-Za-z0-9_.\\-]+)/([A-Za-z0-9_.\\-]+)")
-    for (m in re.findAll(text)) {
+    for (m in GH_LINK.findAll(text)) {
         val s = parseSlug("github.com/${m.groupValues[1]}/${m.groupValues[2]}") ?: continue
         out.add(s)
     }
@@ -795,12 +860,11 @@ private fun extractGithubLinks(text: String): List<String> {
 }
 
 /**
- * 解析历史卡片（第六轮新增）。
+ * 解析历史卡片。
  *
- * 默认收起只显示一行：手机上「历史」不是每次都要看的东西，摊开会把下面的仓库信息
- * 顶出屏幕，那正是用户上一轮抱怨「设置页太混乱」的同一类问题。
- * 展开后最多列 12 条（存储上限 [History.MAX] = 60），每条右侧一个删除，底部一个「清空」。
- * 点条目 = 填回输入框并立即重新解析（见 [ParserViewModel.openHistory]）。
+ * 默认收起仅显示一行，展开后最多列出 12 条（存储上限 [History.MAX] = 60），
+ * 每条右侧提供删除按钮，底部提供「清空」按钮。
+ * 点击条目将填入输入框并立即重新解析（见 [ParserViewModel.openHistory]）。
  */
 @Composable
 private fun HistoryCard() {
@@ -857,11 +921,11 @@ private fun HistoryCard() {
                     Text("还有 ${vmParser.history.size - 12} 条未列出", fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // 说清楚这里存的到底是什么：用户容易以为历史是「页面快照」，
-                // 点一下能离线复现。实际只存链接，点开必然重新联网拿最新内容。
+                // 此处存储的内容仅为链接，而非页面快照，
+                // 点击后需重新联网获取最新内容。
                 Text(
-                    "只记链接，不存页面快照：点一条会重新联网解析（看到的是最新内容，离线时点不开）。" +
-                        "同一仓库只留最新一条，开关在「设置 → 浏览」。",
+                    "仅记录链接，不保存页面快照；点击条目重新联网解析，离线时无法打开。" +
+                        "同一仓库保留最新一条，开关位于「设置 → 浏览」。",
                     fontSize = 10.sp, color = MaterialTheme.colorScheme.outline
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {

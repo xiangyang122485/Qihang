@@ -1,8 +1,8 @@
 package com.gh.dl.ui.settings
 
-// 第五轮「加速拆分」：设置 → 加速 → 下载加速（三级页）。
-// 内容是从原「网络」页那张「加速代理」大卡片里搬出来的：开关、前缀输入、常用前缀、
-// 已存前缀管理、下载后 SHA256 校验。原网络页只留一句跳转，不再堆说明。
+// 「加速拆分」：设置 → 加速 → 下载加速（三级页）。
+// 内容自原「网络」页的「加速代理」卡片拆分而来：开关、前缀输入、常用前缀、
+// 已存前缀管理、下载后 SHA256 校验。原网络页仅保留跳转入口。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -52,15 +52,12 @@ fun AccelDownloadPage(onBack: () -> Unit) {
         SubTitle("下载加速", onBack)
 
         CollapsibleNote(
-            "这套加速是什么、有什么风险（点击展开）",
-            "原理：在 GitHub 文件链接前拼一个前缀，由第三方中转代拉再回传。\n" +
-                "只作用于**文件**（Release、raw、源码包、jsDelivr）；网页它代理不了，" +
-                "浏览页用的是另一套，见「浏览加速」。\n" +
-                "风险：公共实例任何人都能搭，它可能替换你下载的二进制、也可能随时换域名跑路。" +
-                "所以默认关闭，且下面那个「下载后强制校验 SHA256」建议一直开着。\n" +
-                "隐私：开启时绝不会把你的 GitHub Token 发给中转（令牌只发给官方域名）。\n" +
-                "当前实测可用：gh-proxy.com、gh-proxy.org。已失效的：mirror.ghproxy.com→502、" +
-                "ghproxy.net→403、gh.llkk.cc→502、hub.gitmirror.com→502、github.akams.cn→404。"
+            "下载加速说明",
+            "原理：在 GitHub 文件链接前拼接前缀，由第三方中转代拉后回传。\n" +
+                "· 仅作用于文件（Release、raw、源码包、jsDelivr）；网页无法经此代理，见「浏览加速」；\n" +
+                "· 公共前缀任何人可搭建，存在替换文件内容的可能，域名亦可能变更，" +
+                "故本档默认关闭，并默认启用「下载后强制校验 SHA256」；\n" +
+                "· 启用时 GitHub Token 不发送至中转，令牌仅用于官方域名。"
         )
 
         GhCard(Modifier.fillMaxWidth()) {
@@ -68,42 +65,32 @@ fun AccelDownloadPage(onBack: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("启用下载加速", fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     Switch(checked = vm.accelOn, onCheckedChange = {
-                        vm.accelOn = it
-                        Settings.put(ctx, "accelOn", if (it) "1" else "0")
-                        vm.channel =
-                            if (it && vm.custom.isNotBlank()) Channels.CUSTOM else Channels.OFFICIAL
-                        Settings.put(ctx, "channel", vm.channel)
-                        Net.rebuild()
+                        vm.setAccelEnabled(ctx, it)
+                        if (it && vm.custom.isBlank() && vm.accelPrefixes.isEmpty()) {
+                            toast(ctx, "加速已开启，但还没有可用前缀；请先在下方添加")
+                        }
                     })
                 }
                 OutlinedTextField(
                     value = vm.custom, onValueChange = {
-                        vm.custom = it
-                        Settings.put(ctx, "custom", it)
-                        if (vm.accelOn) {
-                            vm.channel = if (it.isNotBlank()) Channels.CUSTOM else Channels.OFFICIAL
-                            Net.rebuild()
-                        }
+                        // 保留正在输入的原文（此阶段自动补协议会干扰输入），
+                        // 落盘后由 Accel.normalizePrefix 在使用时统一规范化
+                        vm.onCustomEdited(ctx, it)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("前缀地址") },
                     placeholder = { Text("https://gh-proxy.com") },
                     singleLine = true
                 )
-                Text("常用前缀（点一下填入，仅列实测可用的）：", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("常用前缀（点击填入）：", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    listOf("https://gh-proxy.com", "https://gh-proxy.org").forEach { p ->
-                        TextButton(onClick = {
-                            vm.custom = p
-                            Settings.put(ctx, "custom", p)
-                            if (vm.accelOn) {
-                                vm.channel = Channels.CUSTOM
-                                Net.rebuild()
-                            }
-                        }) { Text(p.removePrefix("https://"), fontSize = 11.sp) }
+                    Accel.BUILT_IN_PREFIXES.forEach { p ->
+                        TextButton(onClick = { vm.activatePrefix(ctx, p) }) {
+                            Text(p.removePrefix("https://"), fontSize = 11.sp)
+                        }
                     }
                 }
             }
@@ -117,21 +104,16 @@ fun AccelDownloadPage(onBack: () -> Unit) {
                         Icon(Icons.Filled.Add, contentDescription = "添加前缀", tint = MaterialTheme.colorScheme.primary)
                     }
                 }
-                Text("点一下填入，点垃圾桶删除。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("点击填入；点删除按钮移除。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (vm.accelPrefixes.isEmpty()) {
-                    Text("还没有保存的前缀，点右上角「+」添加。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("暂无已保存前缀，点击右上角「+」添加。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     vm.accelPrefixes.forEach { p ->
-                        val active = p == vm.custom
+                        val active = p == Accel.normalizePrefix(vm.custom)
                         Row(
                             Modifier.fillMaxWidth()
                                 .clickable {
-                                    vm.custom = p
-                                    Settings.put(ctx, "custom", p)
-                                    if (vm.accelOn) {
-                                        vm.channel = Channels.CUSTOM
-                                        Net.rebuild()
-                                    }
+                                    vm.activatePrefix(ctx, p)
                                     toast(ctx, "已填入：$p")
                                 }
                                 .padding(vertical = 6.dp),
@@ -166,7 +148,7 @@ fun AccelDownloadPage(onBack: () -> Unit) {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text("下载后强制校验 SHA256", fontSize = 13.sp)
-                        Text("开了加速就建议一直开着：能发现中转有没有换掉你的文件", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("开启加速时用于检测中转是否替换文件", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = vm.verifyOn, onCheckedChange = {
                         vm.verifyOn = it

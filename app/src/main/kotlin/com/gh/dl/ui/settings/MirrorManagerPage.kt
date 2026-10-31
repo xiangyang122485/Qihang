@@ -1,6 +1,6 @@
 package com.gh.dl.ui.settings
 
-// 镜像源管理：导入/删除/测速/设默认 高校镜像（清华·华为云·中科大等）。
+// 镜像源管理：导入 / 删除 / 测速 / 设置默认高校镜像（清华·华为云·中科大等）。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -87,14 +87,14 @@ fun MirrorManagerPage(onBack: () -> Unit) {
     ) { uri ->
         if (uri != null) {
             val text = try {
-                ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText().orEmpty()
+                ctx.contentResolver.openInputStream(uri)?.use { it.reader().readText() }.orEmpty()
             } catch (e: Exception) { "" }
             val n = MirrorManager.importFromText(ctx, text)
             if (n > 0) {
                 toast(ctx, "已导入 $n 个镜像源")
                 refresh()
             } else {
-                toast(ctx, "这个文件里没解析到 http(s) 镜像地址")
+                toast(ctx, "该文件中未解析到 http(s) 镜像地址")
             }
         }
     }
@@ -108,10 +108,10 @@ fun MirrorManagerPage(onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 CollapsibleNote(
-                    "这些镜像是干什么用的（点击展开）",
-                    "高校镜像（清华·华为云·中科大等）作为直连目标站，用于下载 GitHub Release / 源码包。\n" +
-                        "默认镜像会驱动「国内镜像」线路的下载地址；可导入自建/内网节点，可删除、可测速排序。\n" +
-                        "它们是**下载**用的直连站，和「设置 → 加速 → 浏览加速」里那批网页镜像站是两回事。"
+                    "镜像源用途说明",
+                    "高校镜像（清华 · 华为云 · 中科大等）作为直连下载目标，用于获取 GitHub Release 与源码包。\n" +
+                        "默认镜像决定「国内镜像」线路的下载地址；支持导入自建或内网节点，可删除与测速排序。\n" +
+                        "此类镜像仅用于下载，与「设置 → 加速 → 浏览加速」的网页镜像站不同。"
                 )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -119,10 +119,10 @@ fun MirrorManagerPage(onBack: () -> Unit) {
                 ) {
                     Button(onClick = {
                         testing = true
-                        Thread {
-                            // try/finally 是必须的：speedTest 里是一串 HEAD 请求，
-                            // 任何一个抛出都会让这条线程死在半路 —— 原来 testing 就永远停在 true，
-                            // 按钮一直显示「测速中…」且再也点不动，只能退出这页重来。
+                        Threads.start("镜像测速") {
+                            // try/finally 为必需：speedTest 内包含一系列 HEAD 请求，
+                            // 任一请求抛出异常均会导致线程终止，testing 状态无法重置为 false，
+                            // 按钮持续显示「测速中…」且无法再次点击，仅能退出页面重试。
                             var err: String? = null
                             try { MirrorManager.speedTest(ctx) } catch (e: Exception) {
                                 err = e.message ?: e.javaClass.simpleName
@@ -133,7 +133,7 @@ fun MirrorManagerPage(onBack: () -> Unit) {
                                 refresh()
                                 toast(ctx, msg)
                             }
-                        }.start()
+                        }
                     }) {
                         Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
@@ -166,7 +166,7 @@ fun MirrorManagerPage(onBack: () -> Unit) {
 
         if (mirrors.isEmpty()) {
             GhCard(Modifier.fillMaxWidth()) {
-                Text("还没有镜像源，点上方「添加」或「导入」。", Modifier.padding(14.dp),
+                Text("暂无镜像源，请点击上方「添加」或「导入」。", Modifier.padding(14.dp),
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
@@ -217,10 +217,10 @@ fun MirrorManagerPage(onBack: () -> Unit) {
 
         Spacer(Modifier.height(8.dp))
         CollapsibleNote(
-            "边界说明（点击展开）",
-            "这些镜像直连 GitHub 公开开源资源，不涉及私有仓库与 SSH。\n" +
+            "边界说明",
+            "此类镜像直连下载 GitHub 公开资源，不涉及私有仓库与 SSH。\n" +
                 "下载加速前缀（ghproxy 类）在「设置 → 加速 → 下载加速」管理，" +
-                "浏览用的网页镜像站在「设置 → 加速 → 浏览加速」管理，三者互不影响。"
+                "网页镜像站在「设置 → 加速 → 浏览加速」管理，三者互不影响。"
         )
     }
 
@@ -268,7 +268,7 @@ fun MirrorManagerPage(onBack: () -> Unit) {
             title = { Text("导入镜像源") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("支持 TXT（每行 名称|https://地址 或纯地址，# 开头为注释）或 JSON（url 数组 / 含 name+url 的对象数组）。",
+                    Text("支持 TXT 格式（每行 名称|https://地址 或纯地址，# 开头为注释）或 JSON 格式（URL 数组或含 name+url 的对象数组）。",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = {
                         fileLauncher.launch(arrayOf("text/*", "application/json", "*/*"))
@@ -290,7 +290,7 @@ fun MirrorManagerPage(onBack: () -> Unit) {
                         if (def != null) { vmParser.domestic = def; vmParser.applySource(ctx) }
                         refresh(); showImport = false; toast(ctx, "已导入 $n 个")
                     } else {
-                        toast(ctx, "没解析到 http(s) 镜像地址")
+                        toast(ctx, "未解析到 http(s) 镜像地址")
                     }
                 }) { Text("导入") }
             },

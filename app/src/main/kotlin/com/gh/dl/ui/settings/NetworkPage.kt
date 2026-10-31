@@ -1,8 +1,8 @@
 package com.gh.dl.ui.settings
 
 // 「网络」二级页：线路选择 / GitHub Token / GitCode Token / HTTP 代理 / 镜像源管理 / 线路诊断。
-// 第五轮把「加速代理」整块搬走了（→ 设置 → 加速 → 下载加速 / 浏览加速），
-// 因为下载和浏览的加速机制完全不同，混在这一页里既看不懂也管不住。
+// 「加速代理」已移至独立页面（→ 设置 → 加速 → 下载加速 / 浏览加速），
+// 因下载与浏览的加速机制完全不同，合并管理易造成混淆。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -51,11 +51,10 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
             Column(Modifier.padding(12.dp)) {
                 Text("线路选择", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 CollapsibleNote(
-                    "这条管的是什么（点击展开）",
-                    "只影响**解析和下载**去哪取文件：官方源直连（时断时通，不依赖中转）；" +
-                        "国内镜像走高校 github-release 镜像（直连无中转）。\n" +
-                        "它和「设置 → 加速」里的两档加速是独立的：加速是另一层改写，" +
-                        "关掉这里选国内镜像时不需要开加速。"
+                    "线路选择说明",
+                    "仅影响解析与下载的文件来源：官方源直连，不经中转；" +
+                        "国内镜像走高校 github-release 镜像，同为直连。\n" +
+                        "本选项与「设置 → 加速」的两档独立，选择国内镜像时无需开启加速。"
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
@@ -78,7 +77,7 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
             }
         }
 
-        // ---- DoH + 真实 IP 优选（第九轮：默认关闭） ----
+        // ---- DoH + 真实 IP 优选（默认关闭） ----
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -87,31 +86,29 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
                     Switch(checked = vmSettings.dnsPinningOn, onCheckedChange = {
                         vmSettings.dnsPinningOn = it
                         Settings.put(ctx, "dnsPinningOn", if (it) "1" else "0")
-                        // data 层不读 ViewModel：改完必须立刻落到 Net，否则界面开着、底层还在跑
-                        // （或反过来，界面关了底下还在发请求）。
+                        // data 层不读 ViewModel：修改后必须立即同步至 Net，否则界面开启时底层仍使用旧配置
+                        // （或界面关闭后底层仍发送请求）。
                         Net.dnsPinningOn = it
                     })
                 }
                 CollapsibleNote(
-                    "这一档管什么（点击展开）",
-                    "GitHub 域名常被 DNS 污染。开着这一档时，App 会拿你要访问的 GitHub 域名\n" +
-                        "去问公共 DoH 服务（dns.alidns.com / doh.pub）要真实 IP，再逐个 IP 做真实\n" +
-                        "HTTPS 探活，把最快那个记下来直接用（只连 GitHub 官方服务器，不经任何中转）。\n" +
-                        "代价是：第三方 DoH 会知道「你在解析 github.com 这个域名」——\n" +
-                        "它拿到的是域名，不是你具体访问哪个仓库，但仍然是把访问行为透露给了别人。\n" +
-                        "所以第九轮把它改成**默认关闭**：关着时完全走系统 DNS、只直连，\n" +
-                        "污染环境下会老实报「抓不开」，不会背着你走旁路。\n" +
-                        "「线路诊断」不受这一档限制 —— 那是你主动点的，本来就该真测。"
+                    "DoH + 真实 IP 优选说明",
+                    "GitHub 域名可能被 DNS 污染。启用后，应用将待访问的 GitHub 域名提交公共 DoH" +
+                        "（dns.alidns.com / doh.pub）获取真实 IP，逐个执行 HTTPS 探活，" +
+                        "记录最快 IP 后使用；连接的仍是 GitHub 官方服务器，不经中转。\n" +
+                        "· 第三方 DoH 会获知正在解析的域名（不含具体仓库），属于向第三方披露访问行为；\n" +
+                        "· 本项默认关闭，关闭时仅使用系统 DNS 直连，污染环境下报告「无法连接」，不自动改道；\n" +
+                        "· 「线路诊断」由用户主动触发，不受本项限制。"
                 )
                 Text(
-                    if (vmSettings.dnsPinningOn) "已开启：会自动向第三方 DoH 查询域名并外连探活"
-                    else "已关闭（默认）：只用系统 DNS 直连，不查询第三方 DoH",
+                    if (vmSettings.dnsPinningOn) "已开启：向第三方 DoH 查询域名并外连探活"
+                    else "已关闭（默认）：仅使用系统 DNS 直连，不查询 DoH",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // ---- 加速入口（三级页，第五轮从本页拆出） ----
+        // ---- 加速入口（三级页，已从本页拆出） ----
         NavRow(
             icon = Icons.Filled.Speed,
             title = "加速设置",
@@ -125,10 +122,10 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("GitHub Token（可选）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 CollapsibleNote(
-                    "GitHub Token 说明（点击展开）",
-                    "官方线路通的时候，填 Token 能提高 API 速率限制；" +
-                        "SSH 克隆用的不是它，是「克隆 → SSH 密钥管理」里那把手机钥匙。" +
-                        "开启任何一档加速时，这个令牌都不会被发给中转。"
+                    "GitHub Token 说明",
+                    "官方线路可达时，填写 Token 可提高 API 速率限制；" +
+                        "SSH 克隆不使用此 Token，而是使用「克隆 → SSH 密钥管理」中的本机密钥。" +
+                        "开启任何一档加速时，此 Token 不会发送至中转服务器。"
                 )
                 OutlinedTextField(
                     value = vmSettings.token, onValueChange = {
@@ -142,15 +139,15 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         }
 
         // ---- GitCode Token（可选）----
-        // 这个令牌的归属域名就是 gitcode.com，只发给它自己；绝不会被带进
-        // GitHub 请求或任何加速代理前缀（Net.text 的 authHeader 只在显式调用时使用）。
+        // 此 Token 归属域名为 gitcode.com，仅发送至该域名；不会被带入
+        // GitHub 请求或任何加速代理前缀（Net.text 的 authHeader 仅在显式调用时使用）。
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("GitCode Token（可选）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 CollapsibleNote(
-                    "GitCode Token 说明（点击展开）",
-                    "留空时国内源搜索会跳过 GitCode（它的搜索接口要令牌，" +
-                        "空发只会被挡回来）。令牌只在请求 gitcode.com 时带上，不会发给 GitHub 或任何中转。"
+                    "GitCode Token 说明",
+                    "GitCode 搜索接口要求携带令牌，留空时跳过该源。" +
+                        "此令牌仅在请求 gitcode.com 时携带，不会发送至 GitHub 或任何中转。"
                 )
                 OutlinedTextField(
                     value = AppState.gitcodeToken,
@@ -169,9 +166,9 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("HTTP 代理（可选）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 CollapsibleNote(
-                    "HTTP 代理说明（点击展开）",
-                    "系统层 HTTP 代理（host:port），与你自己的代理软件配合用；" +
-                        "和「加速」那两档是不同机制，一般只开一个。填完点下方保存才生效。"
+                    "HTTP 代理说明",
+                    "系统层 HTTP 代理（host:port），配合用户自有代理软件使用；" +
+                        "与「加速」两档为不同机制，通常仅启用其一，填写后立即生效。"
                 )
                 OutlinedTextField(
                     value = vmSettings.proxy, onValueChange = {
@@ -189,7 +186,7 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         NavRow(
             icon = Icons.Filled.Storage,
             title = "镜像源管理",
-            subtitle = "导入/删除/测速 高校镜像（清华·华为云·中科大等），设默认下载线路",
+            subtitle = "高校镜像（清华 · 华为云 · 中科大等）的导入、删除与测速，可设为默认下载线路",
             onClick = { nav.navigate(SettingsRoute.Mirrors.route) }
         )
 
@@ -197,13 +194,13 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         NavRow(
             icon = Icons.Filled.MonitorHeart,
             title = "线路诊断",
-            subtitle = vmParser.netSummary.ifBlank { "看看当前网络对 GitHub 通不通" },
+            subtitle = vmParser.netSummary.ifBlank { "检测当前网络对 GitHub 的连通性" },
             onClick = { nav.navigate(SettingsRoute.Diag.route) }
         )
     }
 }
 
-/** host:port → Net 的代理字段（改了立即重建客户端，不需要再点保存） */
+/** host:port → Net 的代理字段（修改后立即重建客户端，无需再点保存） */
 private fun applyProxy(value: String) {
     val p = value.split(":")
     if (p.size == 2) {

@@ -1,8 +1,9 @@
 # ===== Android / Gradle 通用忽略 =====
 *.apk
 *.aar
-# 例外：OkDownload 本地 aar 是编译必需依赖（app/build.gradle.kts 里 files("libs/...")），
-# 若被忽略则新克隆没有 app/libs/，源码根本构建不了。
+# 例外：app/libs/*.aar 包含 OkDownload 本地 AAR，为 app/build.gradle.kts 中
+# files("libs/...") 引用的编译期必需依赖。若被通配符 *.aar 排除，新克隆仓库将
+# 缺少 app/libs/ 目录下的文件，导致构建失败。因此用否定规则将其重新纳入版本管理。
 !app/libs/*.aar
 *.ap_
 *.aab
@@ -14,7 +15,7 @@ out/
 build/
 .gradle/
 
-# 本地 SDK 路径 / 机器相关配置（含 sdk.dir），绝不入库
+# 本地 SDK 路径与机器相关配置（含 sdk.dir），不纳入版本管理
 local.properties
 
 # Android Studio / IntelliJ
@@ -27,11 +28,11 @@ captures/
 .cxx/
 .kotlin/
 
-# 设备截图 / 临时预览图（可能含隐私，且为一次性产物）
+# 设备截图与临时预览图（可能包含隐私信息，且为一次性产物）
 screen_*.png
 app-icon-preview.svg
 
-# ===== 本项目私密 / 敏感文件（绝不入库）=====
+# ===== 本项目私密与敏感文件（不纳入版本管理）=====
 # 生产签名 keystore 及配套密码文件
 app/keystore/
 
@@ -45,5 +46,5 @@ build_*.txt
 .DS_Store
 Thumbs.db
 
-# WorkBuddy 项目记忆（不应进入源码仓库）
+# WorkBuddy 项目记忆（不属于源码仓库内容）
 .workbuddy/

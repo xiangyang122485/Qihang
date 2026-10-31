@@ -1,8 +1,8 @@
 package com.gh.dl.ui.settings
 
-// 第五轮「加速拆分」：设置 → 加速 → 浏览加速（三级页）。
-// 与下载加速完全独立：这里管的是 githubfast.com 这类**网页**镜像站，
-// 它们只放行 git/curl 类 UA（浏览器 UA 一律 403），所以只能配合「命令行抓取 + 本地渲染」用。
+// 「加速拆分」：设置 → 加速 → 浏览加速（三级页）。
+// 与下载加速完全独立：此处管理 githubfast.com 类**网页**镜像站，
+// 此类站点仅放行 git/curl 类 UA（浏览器 UA 返回 403），因此仅配合「命令行抓取 + 本地渲染」使用。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -52,7 +52,7 @@ fun AccelBrowsePage(onBack: () -> Unit) {
     val vm = LocalSettingsVM.current
     var showAdd by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
-    // 下标对应 vm.browseMirrors；null 表示还没测过
+    // 下标对应 vm.browseMirrors；null 表示尚未测试
     val results = remember { mutableStateListOf<GhView.MirrorProbe?>().apply { repeat(vm.browseMirrors.size) { add(null) } } }
 
     Column(
@@ -62,18 +62,14 @@ fun AccelBrowsePage(onBack: () -> Unit) {
         SubTitle("浏览加速", onBack)
 
         CollapsibleNote(
-            "这套加速是什么（点击展开）",
-            "浏览页不联网：内容是用命令行方式（curl 类 UA）抓下来、净化后本地渲染的。" +
-                "这里选的就是「去哪个网页镜像站抓」。\n" +
-                "为什么必须是镜像而不是下载那套前缀：文件前缀代理不了网页，" +
-                "把仓库主页交给它，它把自己的首页发回来。\n" +
-                "为什么这些站不直接用浏览器打开：它们只放行 git/curl 类 UA，" +
-                "浏览器 UA 一律 403——所以这一档加速只对 App 内的浏览有效。\n" +
-                "关掉这一档就只直连 GitHub。\n" +
-                "第九轮起这一档**默认关闭**（它会把你要访问的页面交给第三方镜像站中转，" +
-                "属于敏感项，得由你决定开不开）。\n" +
-                "关着且「设置 → 网络 → DoH + 真实 IP 优选」也关着时，国内网络下大概率打不开 —— " +
-                "这不是 Bug，是不替你暗中走旁路的代价；打不开时自己在这两档里选一个开。"
+            "浏览加速说明",
+            "浏览页不直接联网：内容经抓取器获取（curl 类 UA）并净化后在本地渲染，" +
+                "本档决定从哪个网页镜像站抓取。\n" +
+                "· 文件加速前缀仅作用于文件下载，无法代理网页，故本档需单独配置镜像站；\n" +
+                "· 此类站点仅放行 git/curl 类 UA，浏览器访问返回 403，加速仅对应用内浏览有效；\n" +
+                "· 本档默认关闭，开启后页面内容经由第三方镜像站。\n" +
+                "本档与「设置 → 网络 → DoH + 真实 IP 优选」均关闭时，国内网络环境可能无法访问，" +
+                "此为不自动改道的预期行为；需要访问时启用其中一档。"
         )
 
         GhCard(Modifier.fillMaxWidth()) {
@@ -86,8 +82,8 @@ fun AccelBrowsePage(onBack: () -> Unit) {
                     })
                 }
                 Text(
-                    if (vm.browseAccelOn) "抓取顺序：先镜像站，失败再直连 GitHub"
-                    else "抓取顺序：只直连 GitHub（不再优先镜像站；是否走真实 IP 优选看「设置 → 网络」那一档）",
+                    if (vm.browseAccelOn) "抓取顺序：优先镜像站，失败后直连 GitHub"
+                    else "抓取顺序：仅直连 GitHub（真实 IP 优选见「设置 → 网络」）",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -96,14 +92,14 @@ fun AccelBrowsePage(onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("网页镜像站（按顺序试）", fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text("网页镜像站（按顺序尝试）", fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f))
                     IconButton(onClick = { showAdd = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "添加镜像站", tint = MaterialTheme.colorScheme.primary)
                     }
                 }
                 if (vm.browseMirrors.isEmpty()) {
                     Text(
-                        "列表为空时自动用内置的 " + GhView.DEFAULT_PAGE_MIRROR.removePrefix("https://") + "。",
+                        "列表为空时自动使用内置的 " + GhView.DEFAULT_PAGE_MIRROR.removePrefix("https://") + "。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -134,17 +130,17 @@ fun AccelBrowsePage(onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(onClick = {
                         if (vm.browseMirrors.isEmpty()) {
-                            toast(ctx, "列表为空，没有可测的镜像站")
+                            toast(ctx, "列表为空，无可测速的镜像站")
                             return@Button
                         }
                         testing = true
-                        // 列表在探测期间可能被用户改（删/加），先取快照，避免边跑边读可变列表
+                        // 列表在探测期间可能被用户修改（删除 / 添加），先取快照，避免运行时读取可变列表
                         val snap = vm.browseMirrors.toList()
-                        Thread {
+                        Threads.start("镜像测速") {
                             val main = android.os.Handler(android.os.Looper.getMainLooper())
-                            // probeMirror 自己已经 runCatching（返回 MirrorProbe(false,…)），
-                            // 但这层再兜一次：任何未预期抛出都得让 testing 落回 false，
-                            // 否则按钮永远「测速中」
+                            // probeMirror 内部已使用 runCatching（返回 MirrorProbe(false,…)
+                            // ），但外层再次捕获：任何未预期异常均需将 testing 重置为 false，
+                            // 否则按钮持续显示「测速中」
                             try {
                                 snap.forEachIndexed { idx, m ->
                                     val r = GhView.probeMirror(m)
@@ -155,7 +151,7 @@ fun AccelBrowsePage(onBack: () -> Unit) {
                             } finally {
                                 main.post { testing = false }
                             }
-                        }.start()
+                        }
                     }) {
                         Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
@@ -176,8 +172,7 @@ fun AccelBrowsePage(onBack: () -> Unit) {
         }
 
         Text(
-            "提示：这类站换域名很频繁。实测 hub.gitmirror.com、kkgithub.com、bgithub.xyz、ghp.ci " +
-                "当前都连不通，只剩 githubfast.com 可用；你也可以把自己知道的站加进来排在前面。",
+            "网页镜像站域名更换频繁，可通过「测速」验证可用性后调整顺序。",
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
@@ -190,7 +185,7 @@ fun AccelBrowsePage(onBack: () -> Unit) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "填站点根地址（不要带仓库路径），一行一个。添加后可用「测速」验证是不是真能返回仓库页。",
+                        "填写站点根地址（不含仓库路径），每行一个；添加后可通过「测速」验证。",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     OutlinedTextField(

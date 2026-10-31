@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标：前景直接引用用户提供的完整图标图（已去水印），背景仅作边缘补色 -->
+<!-- 圆屏设备图标：与 ic_launcher 一致 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_art" />
+    <foreground android:drawable="@drawable/app_icon_art" />
+    <monochrome android:drawable="@drawable/app_icon_monochrome" />
 </adaptive-icon>

@@ -1,6 +1,6 @@
 package com.gh.dl.ui.settings
 
-// 阶段1 纯拆分：原 SettingsTab.kt 的「DiagPage」二级页。逻辑零改动。
+// 自原 SettingsTab.kt 拆分而来的「DiagPage」二级页。业务逻辑未作改动。
 import com.gh.dl.ui.*
 import com.gh.dl.data.*
 
@@ -44,6 +44,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -62,7 +63,7 @@ fun DiagPage(onBack: () -> Unit) {
     val vmSettings = LocalSettingsVM.current
 
     val ctx = LocalContext.current
-    // 「正在探活」「探活报错」都是这一页自己的界面状态，不放 AppState（别的页不关心）
+    // 「正在探活」「探活报错」为本页私有界面状态，不放入 AppState（其他页面无需关心）
     var probing by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf("") }
     Column(
@@ -74,8 +75,9 @@ fun DiagPage(onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 Text(
-                    "逐个查 github.com、api.github.com、codeload、raw、objects 这几个域名：" +
-                        "系统 DNS 给的 IP 和公共 DoH 查到的真实 IP 分别是多少、哪个能连上。",
+                    "依次解析 github.com、api.github.com、codeload、raw、objects，" +
+                        "输出系统 DNS 地址、公共 DoH 地址与各自的连通结果。" +
+                        "若已开启下载加速，还会额外测试当前前缀是否支持 API 与文件下载。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(8.dp))
@@ -86,9 +88,8 @@ fun DiagPage(onBack: () -> Unit) {
         }
 
         // ---- 国内镜像源探活 ----
-        // 第九轮：启动时**不再自动探活**（默认关闭，见 vmSettings.mirrorProbeOn）。
-        // 原来一进 App 就并发对 9 个第三方站点发 HEAD，属于「没经同意就外联」，
-        // 所以这里改成：默认显示「还没联网探活过」+ 一个用户主动点的「立即探活」。
+        // 默认关闭自动探活（vmSettings.mirrorProbeOn）：启动即向第三方站点发送 HEAD 请求属于
+        // 未经用户同意的连接。界面默认显示「尚未探活」，并提供手动「立即探活」按钮。
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -99,11 +100,9 @@ fun DiagPage(onBack: () -> Unit) {
                         TextButton(onClick = {
                             probing = true
                             err = ""
-                            Thread {
-                                // 探活本身可能整段抛出（线程池、DNS 客户端都可能）。
-                                // 结果与错误都只在后台算好，**统一一次 MAIN.post 回主线程写**：
-                                // 既守住「界面状态只从主线程写」的约定，也保证抛出时
-                                // 这个转圈一定停得下来（否则按钮永远点不动，第八轮同类问题）。
+                            Threads.start("镜像源探活") {
+                                // 结果与错误在后台计算完成后单次 MAIN.post 回主线程写入，
+                                // 保证异常时加载指示器也会停止。
                                 var r: List<MirrorSources.Probe> = emptyList()
                                 var failure: String? = null
                                 try {
@@ -119,7 +118,7 @@ fun DiagPage(onBack: () -> Unit) {
                                     err = why ?: ""
                                     probing = false
                                 }
-                            }.start()
+                            }
                         }) { Text(if (AppState.mirrorProbe.isNotEmpty()) "重新探活" else "立即探活", fontSize = 12.sp) }
                     }
                 }
@@ -128,7 +127,7 @@ fun DiagPage(onBack: () -> Unit) {
                     Column(Modifier.weight(1f)) {
                         Text("启动时自动探活", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         Text(
-                            "开着时每次进 App 会自动连这 9 个站点测延迟；关着就一次也不联网，只能手动点。",
+                            "启用后每次进入应用自动连接 9 个站点测量延迟；关闭后不发起连接，仅可手动触发。",
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -141,7 +140,7 @@ fun DiagPage(onBack: () -> Unit) {
                 if (AppState.mirrorProbe.isEmpty()) {
                     Text(
                         if (probing) "正在探活 9 个国内镜像源…"
-                        else "还没探活过（默认不自动联网测）。想看看哪些镜像站通、延迟多少，点上面的「立即探活」。",
+                        else "尚未探活。如需查看连通性与延迟，点击上方「立即探活」。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
@@ -170,13 +169,65 @@ fun DiagPage(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "这里的「可用」只表示那个站点当时连得上，不代表它同步了你要的仓库。\n" +
-                            "解析器选「国内镜像」时列的是「设置 → 镜像源管理」里的全部源（探到延迟的会顺带标出来），不会把没探到的藏掉。",
+                        "「可用」仅表示该站点当时可连接，不代表已同步目标仓库。\n" +
+                            "解析器选择「国内镜像」时列出「设置 → 网络 → 镜像源管理」中的全部源，已探活站点标注延迟。",
                         fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (err.isNotBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(err, fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+
+        // ---- 本机运行环境 ----
+        GhCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("本机运行环境", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                val abi = Device.abis()
+                CompatRow("内核页大小", "${Device.pageSize()} B" + if (Device.widePage()) "（16KB）" else "")
+                CompatRow("支持 ABI", if (abi.isEmpty()) "未知" else abi.joinToString(" / "))
+                CompatRow("内置原生库", if (Device.supportsBundledAbi()) "ABI 匹配" else "ABI 不匹配，相关功能自动回退")
+                CompatRow("aria2c", AriaEngine.status(ctx))
+                CompatRow("libgit2", Git2.status())
+                CompatRow("curl / wget", listOf("curl", "wget").joinToString(" / ") {
+                    if (Fetcher.toolPath(it) != null) "可用" else "缺失"
+                })
+            }
+        }
+
+        // ---- 未捕获异常记录 ----
+        // 线程中逃逸的异常由 [com.gh.dl.App] 落盘，此处展示最近一条，用于定位异常退出
+        var crashSeq by remember { mutableIntStateOf(0) }
+        val crash = remember(crashSeq) { com.gh.dl.App.lastCrash(ctx) }
+        if (crash.first.isNotBlank()) {
+            GhCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "最近一次异常退出",
+                            fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            com.gh.dl.App.clearCrash(ctx)
+                            crashSeq++
+                        }) { Text("清除", fontSize = 12.sp) }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                            .format(java.util.Date(crash.second)),
+                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Box(Modifier.fillMaxWidth().heightIn(max = 200.dp).verticalScroll(rememberScrollState())) {
+                        Text(crash.first, fontSize = 10.sp)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = { copyText(ctx, crash.first, "异常记录已复制") }) {
+                        Text("复制异常记录", fontSize = 12.sp)
                     }
                 }
             }
@@ -193,5 +244,13 @@ fun DiagPage(onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CompatRow(k: String, v: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(k, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(88.dp))
+        Text(v, fontSize = 11.sp)
     }
 }
