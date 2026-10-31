@@ -37,7 +37,17 @@ class DownloadsViewModel : ViewModel() {
     /** 文件下载任务列表 */
     val downloads = mutableStateListOf<DlJob>()
     private var nextDlId = 1L
-    fun newDlId(): Long = nextDlId++
+
+    /** 历史任务只合并一次；重复调用（配置变更等）不会把同一批记录再追加一遍 */
+    private var loadedOnce = false
+
+    /** 分配新任务 id：跳过列表中已存在的 id，避免与尚未合并/已恢复的历史任务冲突 */
+    fun newDlId(): Long {
+        var candidate = nextDlId
+        while (downloads.any { it.id == candidate }) candidate++
+        nextDlId = candidate + 1L
+        return candidate
+    }
 
     /** 下载页「批量删除」多选模式 */
     var dlMultiSelect by mutableStateOf(false)
@@ -95,10 +105,26 @@ class DownloadsViewModel : ViewModel() {
     }
 
     private fun applyLoaded(list: List<DlJob>) {
-        downloads.addAll(list)
-        // 恢复的任务携带旧 id，新任务的 id 必须从最大值之后继续递增，否则
-        // 两条任务 id 相同会导致「勾选删除」「队列撤销」按 id 操作时误影响另一条。
-        nextDlId = (downloads.maxOfOrNull { it.id } ?: 0L) + 1L
+        if (loadedOnce) return
+        loadedOnce = true
+
+        // 合并历史任务时必须再次校验 id 唯一性：loadDownloadsAsync 在 IO 线程读取期间，
+        // 用户可能已经点过「下载」，新任务先进入了列表并占用了相同 id。
+        // 此时若直接 addAll，下载页的 LazyColumn key 会重复并崩溃；
+        // 对冲突的「历史任务」重新编号（新任务可能正在下载，不能改动其 id）。
+        val used = downloads.mapTo(HashSet()) { it.id }
+        var maxId = maxOf(
+            downloads.maxOfOrNull { it.id } ?: 0L,
+            list.maxOfOrNull { it.id } ?: 0L
+        )
+        for (job in list) {
+            if (job.id <= 0L || !used.add(job.id)) {
+                do { maxId++ } while (!used.add(maxId))
+                job.id = maxId
+            }
+            downloads.add(job)
+        }
+        nextDlId = maxOf(nextDlId, maxId + 1L)
     }
 
     /**

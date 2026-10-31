@@ -59,9 +59,24 @@ object DownloadStore {
         return try {
             val arr = JSONArray(f.readText())
             val out = ArrayList<DlJob>(arr.length())
+            // 旧版本（或旧安装数据）可能没有写入 id，读取后大量记录会同时得到 0。
+            // 下载页以 id 作为 LazyColumn 的 key，重复 key 会直接抛出
+            // 「Key ... was already used」导致进程崩溃；勾选删除、队列撤销也会误伤。
+            // 先收集所有原始 id，确定一个大于全部有效 id 的起点，再给缺失/重复的记录补号，
+            // 保证同一份历史内 id 唯一。
+            val objs = ArrayList<JSONObject>(arr.length())
             for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val job = DlJob(o.optLong("id"), o.optString("name"))
+                arr.optJSONObject(i)?.let { objs.add(it) }
+            }
+            val used = HashSet<Long>(objs.size * 2)
+            var nextId = objs.maxOfOrNull { it.optLong("id") }?.coerceAtLeast(0L) ?: 0L
+            for (o in objs) {
+                var id = o.optLong("id")
+                if (id <= 0L || !used.add(id)) {
+                    do { nextId++ } while (!used.add(nextId))
+                    id = nextId
+                }
+                val job = DlJob(id, o.optString("name").ifBlank { "下载文件" })
                 job.url = o.optString("url", "")
                 job.officialSha = if (o.isNull("officialSha")) null else o.optString("officialSha")
                 job.kind = o.optString("kind", "file")

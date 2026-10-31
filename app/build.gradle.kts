@@ -18,10 +18,10 @@ android {
         applicationId = "com.gh.dl" + ((project.findProperty("appIdSuffix") as String?) ?: "")
         minSdk = 26
         targetSdk = 35
-        // 当前版本号 1.3.1。versionCode 必须单调递增，
-        // 与 versionName 不必同格式：130 → 131，后续小改 1.3.2 = 132。
-        versionCode = 131
-        versionName = "1.3.1"
+        // 当前版本号 1.3.2。versionCode 必须单调递增，
+        // 与 versionName 不必同格式：130 → 131 → 132。
+        versionCode = 132
+        versionName = "1.3.2"
         // 仅打包 arm64-v8a：内置的 curl / wget / aria2 / libgit2 为预编译原生库，
         // 仓库内无对应 C 源码，追加 x86_64 需先交叉编译出该 ABI 的四个可执行文件并放入
         // app/src/main/jniLibs/x86_64（编译方式见 docs/BUILD-INTERNALS.md「原生库」一节）。

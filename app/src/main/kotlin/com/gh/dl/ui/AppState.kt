@@ -46,7 +46,7 @@ object CloneJob {
 }
 
 /** 一条 Release 文件的下载任务 */
-class DlJob(val id: Long, val name: String) {
+class DlJob(var id: Long, val name: String) {
     var running by mutableStateOf(false)
     var done by mutableStateOf(false)
     var failed by mutableStateOf(false)
