@@ -47,6 +47,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -163,14 +164,15 @@ fun ParserTab() {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
         item {
+            GhGradientBanner(
+                title = "解析 GitHub 链接",
+                subtitle = "Release · 源码 · 软件包，一键加速下载",
+                icon = Icons.Filled.Link
+            )
+        }
+        item {
             GhCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("解析 GitHub 链接", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    }
-                    Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = vmParser.input,
                         onValueChange = { vmParser.input = it },
@@ -403,6 +405,21 @@ fun ParserTab() {
                     ReleaseCard(rel, assets) { u, n, s -> vmDownloads.startDownload(ctx, u, n, sizeHint = s) }
                 }
             }
+            // ---- Release 分页加载更多（仅官方 API 通道支持；atom / 镜像兜底不显示）----
+            if (vmParser.releasesLoadingMore) {
+                item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { LinearProgressIndicator(Modifier.fillMaxWidth()) } }
+            } else if (vmParser.releasesHasMore) {
+                item {
+                    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Button(onClick = { vmParser.loadMoreReleases(ctx) }) { Text("加载更多 Release") }
+                        if (vmParser.releasesMoreError.isNotBlank()) {
+                            Text("加载失败：${vmParser.releasesMoreError}", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            } else if (vmParser.releasesFromApi && vmParser.releases.isNotEmpty()) {
+                item { Text("已加载全部 Release", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) }
+            }
         }
 
         val mh = vmParser.mirror
@@ -488,13 +505,6 @@ private fun MirrorCard(mh: Mirror.Hit) {
                     LinkActions(a.url)
                 }
             }
-            Spacer(Modifier.height(6.dp))
-            CollapsibleNote(
-                "说明",
-                "国内镜像站（中科大 / 南大 / 清华 / 华为云 / 北京理工 / 上海交大）同步开源项目的 " +
-                    "Release 产物，默认不经第三方中转。点「校验」可复制官方 SHA256 值；" +
-                    "开启「设置 → 加速 → 下载加速」后下载经第三方转发，此时默认强制比对校验值。"
-            )
         }
     }
 }
@@ -702,7 +712,21 @@ private fun ReleaseCard(
 
     GhCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
-            Text(rel.name.ifBlank { rel.tag }, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(rel.name.ifBlank { rel.tag }, fontWeight = FontWeight.Bold)
+                if (rel.pre) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "预发布",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
+            }
             Text(
                 "${rel.tag} · ${rel.published.take(10)} · ${rel.assets.size} 个文件",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -722,6 +746,29 @@ private fun ReleaseCard(
                         Button(onClick = { onDownload(a.url, a.name, a.size) }) { Text("下载") }
                     }
                     LinkActions(a.url)
+                }
+            }
+            if (rel.body.isNotBlank()) {
+                var expanded by remember { mutableStateOf(false) }
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "收起更新说明" else "查看更新说明", fontSize = 12.sp)
+                }
+                if (expanded) {
+                    val shown = if (rel.body.length > 3000) rel.body.take(3000) + "\n…（内容过长，已截断）" else rel.body
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            shown,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
         }
@@ -823,10 +870,6 @@ fun ParseDialog() {
                     placeholder = { Text("https://github.com/owner/repo", fontSize = 12.sp) },
                     minLines = 2
                 )
-                Text(
-                    "支持仓库主页、Release 页与单文件链接；可一次粘贴多个链接（每行一个），解析第一个有效链接。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         },
         confirmButton = {
@@ -921,13 +964,6 @@ private fun HistoryCard() {
                     Text("还有 ${vmParser.history.size - 12} 条未列出", fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // 此处存储的内容仅为链接，而非页面快照，
-                // 点击后需重新联网获取最新内容。
-                Text(
-                    "仅记录链接，不保存页面快照；点击条目重新联网解析，离线时无法打开。" +
-                        "同一仓库保留最新一条，开关位于「设置 → 浏览」。",
-                    fontSize = 10.sp, color = MaterialTheme.colorScheme.outline
-                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { vmParser.clearHistory(ctx) }) {
                         Text("清空历史", fontSize = 12.sp, color = MaterialTheme.colorScheme.link)

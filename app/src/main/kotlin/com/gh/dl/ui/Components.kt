@@ -4,10 +4,14 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Divider
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,6 +25,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.LinearGradient
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,12 +44,58 @@ fun GhCard(
 ) {
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         content = content
     )
+}
+
+/**
+ * 品牌渐变横幅：primary → secondary 对角渐变（深浅色均由各自 ColorScheme 派生，
+ * 自动适配主题）。作为解析页/搜索页的顶部视觉主体，是本次「材质升级」最显眼的变化。
+ */
+@Composable
+fun GhGradientBanner(
+    title: String,
+    subtitle: String? = null,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null 
+) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(
+                Brush.linearGradient(
+                    listOf(cs.primary, cs.secondary),
+                    start = androidx.compose.ui.geometry.Offset.Zero,
+                    end = androidx.compose.ui.geometry.Offset.Infinite
+                ),
+                MaterialTheme.shapes.large
+            )
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (icon != null) {
+                    Icon(icon, contentDescription = null, tint = cs.onPrimary, modifier = Modifier.size(26.dp))
+                    Spacer(Modifier.width(10.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(title, color = cs.onPrimary, style = MaterialTheme.typography.titleLarge)
+                    if (subtitle != null) {
+                        Text(
+                            subtitle,
+                            color = cs.onPrimary.copy(alpha = 0.85f),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**

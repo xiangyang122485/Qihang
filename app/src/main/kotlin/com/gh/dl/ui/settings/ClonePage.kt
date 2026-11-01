@@ -76,11 +76,6 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                         Settings.put(ctx, "cloneOn", if (it) "1" else "0")
                     })
                 }
-                Spacer(Modifier.height(6.dp))
-                CollapsibleNote(
-                    "本组设置说明",
-                    "仅作用于公开仓库的整仓克隆，不影响 Release 与 raw 下载。"
-                )
                 if (!vmSettings.cloneOn) {
                     Spacer(Modifier.height(6.dp))
                     Text(
@@ -107,12 +102,6 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Text("克隆引擎", fontSize = 13.sp)
-                CollapsibleNote(
-                    "克隆引擎说明",
-                    "JGit：纯 Java 实现，SSH 直连 GitHub 22 端口，兼容性最好。\n" +
-                        "libgit2：原生 C 引擎，走 HTTPS，需开启下载加速前缀（443 在部分网络被重置），" +
-                        "大仓库速度较快，仅内置 arm64 二进制。"
-                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
                         "jgit" to "JGit（SSH 直连）",
@@ -133,12 +122,6 @@ fun ClonePage(nav: NavHostController, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(8.dp))
                 Text("libgit2 通道（仅 libgit2 引擎生效）", fontSize = 13.sp)
-                CollapsibleNote(
-                    "libgit2 通道说明",
-                    "HTTPS：443 端口，经下载加速前缀触达 GitHub，公开仓库匿名克隆。\n" +
-                        "SSH：22 端口直连 GitHub 官方 IP；需先在「SSH 密钥管理」生成密钥并将公钥添加至 GitHub，" +
-                        "凭证不经任何代理或中转。"
-                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
                         "https" to "HTTPS（加速代理）",

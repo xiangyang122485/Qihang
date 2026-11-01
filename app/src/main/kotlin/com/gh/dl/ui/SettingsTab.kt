@@ -82,35 +82,6 @@ import com.gh.dl.data.Store
 import com.gh.dl.data.fmtSize
 import com.gh.dl.ui.settings.*
 
-/**
- * 可折叠的说明块：默认只显示一行标题，点击才展开正文。
- * 用于把各处大段说明收起，避免占满屏幕、挡住下面的内容。
- */
-@Composable
-fun CollapsibleNote(title: String, text: String) {
-    var open by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable { open = !open }
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                title,
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
-            )
-            Text(if (open) "▾" else "▸", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (open) {
-            Text(text, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
 /** 设置主页摘要用短标签：直接输出设置中存储的 id（jsoup / local / okhttp）用户无法理解，
  *  从二级页长描述中截取又过长，因此单独提供一份 2~4 字的简短名称。
  *  未知值原样返回，不做推测——后续新增档位时若未在此处登记，界面上仍可看到真实值。

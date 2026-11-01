@@ -29,7 +29,9 @@ data class Release(
     val pre: Boolean = false,
     val published: String = "",
     val htmlUrl: String = "",
-    val assets: List<Asset> = emptyList()
+    val assets: List<Asset> = emptyList(),
+    /** Release 正文 / 更新说明（Markdown 原文）。仅官方 API 返回；Atom 兜底路径为空。 */
+    val body: String = ""
 )
 
 fun parseRepo(o: JSONObject): RepoInfo = RepoInfo(
@@ -71,7 +73,8 @@ fun parseReleases(arr: JSONArray): List<Release> {
                 pre = o.optBoolean("prerelease"),
                 published = o.optString("published_at"),
                 htmlUrl = o.optString("html_url"),
-                assets = assets
+                assets = assets,
+                body = o.optString("body")
             )
         )
     }

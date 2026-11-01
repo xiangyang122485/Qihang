@@ -6,13 +6,23 @@ import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
+import com.gh.dl.R
 import com.gh.dl.ui.AppState
 
 /**
@@ -49,6 +59,11 @@ private val GitHubLight = lightColorScheme(
     onTertiary = Color(0xFFFFFFFF),
     tertiaryContainer = Color(0xFFFBEFFF),
     onTertiaryContainer = Color(0xFF3A0B60),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFFBFCFD),
+    surfaceContainer = Color(0xFFF6F8FA),
+    surfaceContainerHigh = Color(0xFFEFF2F5),
+    surfaceContainerHighest = Color(0xFFE8ECF0),
     error = Color(0xFFB00020),
     onError = Color(0xFFFFFFFF),
     errorContainer = Color(0xFFFDECEA),
@@ -79,6 +94,11 @@ private val GitHubDark = darkColorScheme(
     onTertiary = Color(0xFF0D1117),
     tertiaryContainer = Color(0xFF3A0B60),
     onTertiaryContainer = Color(0xFFFBEFFF),
+    surfaceContainerLowest = Color(0xFF0B0F14),
+    surfaceContainerLow = Color(0xFF12161C),
+    surfaceContainer = Color(0xFF1A1F26),
+    surfaceContainerHigh = Color(0xFF222831),
+    surfaceContainerHighest = Color(0xFF2B323B),
     error = Color(0xFFCF6679),
     onError = Color(0xFF0D1117),
     errorContainer = Color(0xFFB00020),
@@ -90,6 +110,48 @@ private val GitHubDark = darkColorScheme(
     surfaceVariant = Color(0xFF21262D),
     outline = Color(0xFF30363D),
     outlineVariant = Color(0xFF21262D),
+)
+
+/**
+ * 排版（Typography）：在离线构建、不依赖外部字体（Google 字体资源访问不到）的前提下，
+ * 仅通过字号与字重建立更清晰的层级——标题更紧凑、正文行距更舒展、标签统一中等字重，
+ * 整体观感更接近 Material 3 规范。
+ */
+private val OutfitRegular = Font(R.font.outfit_regular)
+private val OutfitMedium = Font(R.font.outfit_medium, FontWeight.Medium)
+private val OutfitBold = Font(R.font.outfit_bold, FontWeight.Bold)
+
+/** 拉丁字符用 Outfit（Google 字体，离线随包内嵌），中文自动回落系统字体。 */
+private val GhFontFamily = FontFamily(OutfitRegular, OutfitMedium, OutfitBold)
+
+private val GhTypography = Typography(
+    displayLarge = TextStyle(fontFamily = GhFontFamily, fontSize = 52.sp, fontWeight = FontWeight.Normal, lineHeight = 58.sp),
+    displayMedium = TextStyle(fontFamily = GhFontFamily, fontSize = 44.sp, fontWeight = FontWeight.Normal, lineHeight = 50.sp),
+    displaySmall = TextStyle(fontFamily = GhFontFamily, fontSize = 36.sp, fontWeight = FontWeight.Normal, lineHeight = 42.sp),
+    headlineLarge = TextStyle(fontFamily = GhFontFamily, fontSize = 30.sp, fontWeight = FontWeight.Bold, lineHeight = 36.sp),
+    headlineMedium = TextStyle(fontFamily = GhFontFamily, fontSize = 26.sp, fontWeight = FontWeight.Bold, lineHeight = 32.sp),
+    headlineSmall = TextStyle(fontFamily = GhFontFamily, fontSize = 22.sp, fontWeight = FontWeight.Medium, lineHeight = 28.sp),
+    titleLarge = TextStyle(fontFamily = GhFontFamily, fontSize = 20.sp, fontWeight = FontWeight.Bold, lineHeight = 26.sp),
+    titleMedium = TextStyle(fontFamily = GhFontFamily, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp),
+    titleSmall = TextStyle(fontFamily = GhFontFamily, fontSize = 14.sp, fontWeight = FontWeight.Medium, lineHeight = 19.sp),
+    bodyLarge = TextStyle(fontFamily = GhFontFamily, fontSize = 16.sp, fontWeight = FontWeight.Normal, lineHeight = 23.sp),
+    bodyMedium = TextStyle(fontFamily = GhFontFamily, fontSize = 14.sp, fontWeight = FontWeight.Normal, lineHeight = 20.sp),
+    bodySmall = TextStyle(fontFamily = GhFontFamily, fontSize = 12.sp, fontWeight = FontWeight.Normal, lineHeight = 17.sp),
+    labelLarge = TextStyle(fontFamily = GhFontFamily, fontSize = 14.sp, fontWeight = FontWeight.Medium, lineHeight = 18.sp),
+    labelMedium = TextStyle(fontFamily = GhFontFamily, fontSize = 12.sp, fontWeight = FontWeight.Medium, lineHeight = 16.sp),
+    labelSmall = TextStyle(fontFamily = GhFontFamily, fontSize = 11.sp, fontWeight = FontWeight.Medium, lineHeight = 15.sp),
+)
+
+/**
+ * 形状（Shapes）：统一圆角阶梯，卡片走 medium、大容器走 large，
+ * 让全 App 圆角尺寸有一致层级，而非各处散落的硬编码值。
+ */
+private val GhShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(14.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(28.dp),
 )
 
 /**
@@ -160,6 +222,8 @@ fun GhTheme(content: @Composable () -> Unit) {
 
     MaterialTheme(
         colorScheme = if (dark) GitHubDark else GitHubLight,
+        typography = GhTypography,
+        shapes = GhShapes,
         content = content
     )
 }

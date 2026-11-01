@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -19,13 +21,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -50,12 +63,6 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 Text("线路选择", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                CollapsibleNote(
-                    "线路选择说明",
-                    "仅影响解析与下载的文件来源：官方源直连，不经中转；" +
-                        "国内镜像走高校 github-release 镜像，同为直连。\n" +
-                        "本选项与「设置 → 加速」的两档独立，选择国内镜像时无需开启加速。"
-                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
                         "official" to "GitHub 官方源",
@@ -91,15 +98,6 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
                         Net.dnsPinningOn = it
                     })
                 }
-                CollapsibleNote(
-                    "DoH + 真实 IP 优选说明",
-                    "GitHub 域名可能被 DNS 污染。启用后，应用将待访问的 GitHub 域名提交公共 DoH" +
-                        "（dns.alidns.com / doh.pub）获取真实 IP，逐个执行 HTTPS 探活，" +
-                        "记录最快 IP 后使用；连接的仍是 GitHub 官方服务器，不经中转。\n" +
-                        "· 第三方 DoH 会获知正在解析的域名（不含具体仓库），属于向第三方披露访问行为；\n" +
-                        "· 本项默认关闭，关闭时仅使用系统 DNS 直连，污染环境下报告「无法连接」，不自动改道；\n" +
-                        "· 「线路诊断」由用户主动触发，不受本项限制。"
-                )
                 Text(
                     if (vmSettings.dnsPinningOn) "已开启：向第三方 DoH 查询域名并外连探活"
                     else "已关闭（默认）：仅使用系统 DNS 直连，不查询 DoH",
@@ -121,19 +119,24 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("GitHub Token（可选）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                CollapsibleNote(
-                    "GitHub Token 说明",
-                    "官方线路可达时，填写 Token 可提高 API 速率限制；" +
-                        "SSH 克隆不使用此 Token，而是使用「克隆 → SSH 密钥管理」中的本机密钥。" +
-                        "开启任何一档加速时，此 Token 不会发送至中转服务器。"
-                )
+                var ghShow by remember { mutableStateOf(false) }
                 OutlinedTextField(
                     value = vmSettings.token, onValueChange = {
                         vmSettings.token = it
                         Settings.put(ctx, "token", it)
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("GitHub Token（可留空）") }, singleLine = true
+                    label = { Text("GitHub Token（可留空）") }, singleLine = true,
+                    visualTransformation = if (ghShow) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { ghShow = !ghShow }) {
+                            Icon(
+                                if (ghShow) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (ghShow) "隐藏令牌" else "显示令牌"
+                            )
+                        }
+                    }
                 )
             }
         }
@@ -144,11 +147,7 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("GitCode Token（可选）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                CollapsibleNote(
-                    "GitCode Token 说明",
-                    "GitCode 搜索接口要求携带令牌，留空时跳过该源。" +
-                        "此令牌仅在请求 gitcode.com 时携带，不会发送至 GitHub 或任何中转。"
-                )
+                var gcShow by remember { mutableStateOf(false) }
                 OutlinedTextField(
                     value = AppState.gitcodeToken,
                     onValueChange = {
@@ -156,7 +155,17 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
                         Settings.put(ctx, "gitcodeToken", it.trim())
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("GitCode 访问令牌（可留空）") }, singleLine = true
+                    label = { Text("GitCode 访问令牌（可留空）") }, singleLine = true,
+                    visualTransformation = if (gcShow) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { gcShow = !gcShow }) {
+                            Icon(
+                                if (gcShow) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (gcShow) "隐藏令牌" else "显示令牌"
+                            )
+                        }
+                    }
                 )
             }
         }
@@ -165,11 +174,6 @@ fun NetworkPage(nav: NavHostController, onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("HTTP 代理（可选）", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                CollapsibleNote(
-                    "HTTP 代理说明",
-                    "系统层 HTTP 代理（host:port），配合用户自有代理软件使用；" +
-                        "与「加速」两档为不同机制，通常仅启用其一，填写后立即生效。"
-                )
                 OutlinedTextField(
                     value = vmSettings.proxy, onValueChange = {
                         vmSettings.proxy = it

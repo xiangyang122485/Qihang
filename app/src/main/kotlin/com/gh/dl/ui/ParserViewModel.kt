@@ -57,6 +57,13 @@ class ParserViewModel : ViewModel() {
     var releasesLoading by mutableStateOf(false)
     /** Release 请求失败原因；与「仓库没有 Release」区分显示 */
     var releasesError by mutableStateOf("")
+    /** Release 分页加载更多：当前页（首屏=1）、是否还有下一页、是否正在加载下一页、当前列表是否来自官方 API */
+    var releasesPage by mutableStateOf(1)
+    var releasesHasMore by mutableStateOf(false)
+    var releasesLoadingMore by mutableStateOf(false)
+    var releasesFromApi by mutableStateOf(false)
+    /** 分页加载下一页失败时的提示（不覆盖 releasesError） */
+    var releasesMoreError by mutableStateOf("")
     var refs by mutableStateOf<List<Pair<String, String>>>(emptyList())
     var selRef by mutableStateOf("")
     var filter by mutableStateOf("all")
@@ -137,13 +144,14 @@ class ParserViewModel : ViewModel() {
     private class ApiResult(val body: String, val direct: Boolean, val note: String = "")
 
     /**
-     * 请求 GitHub API，失败时自动切换线路重试一次。
+     * 请求 GitHub API：以加速前缀（第三方中转）为主线，单发、不并发、不与直连竞速。
      *
-     * 加速前缀为 gh-proxy 风格的**文件**中转，部分中转站不代理 api.github.com
-     *（返回自身首页或 403），而直连在部分网络下又不可达。原实现只按当前配置发一次请求，
-     * 任何异常都被当作「官方线路不可达」，用户必须手动刷新第二次或重启应用才可能成功。
-     * 现在：首次按当前配置请求 → 清空优选 IP → 绕开前缀直连重试；
-     * 任一成功即返回，并把实际生效的线路告诉后续可选请求。
+     * 本工具存在的前提就是 GitHub 直连不可靠，因此 API 同样只信任中转。
+     * 上一版对每条 API 同时打「中转 + 直连」两条线、又把仓库/Release/分支/标签并发发起，
+     * 瞬间对同一中转站堆出七八个请求，正好触发它的二级限流（HTTP 403），
+     * 表现为「Release 刷不出来、要点好几下刷新才出来」。回到单发串行即可从根上避免突发。
+     * 中转偶发失败时由 App 内部退避重试一次（把「请用户刷新」变成「自动重试」），
+     * 仍失败才短暂尝试直连兜底；再失败则交由调用方回退国内镜像 / jsDelivr。
      */
     private fun apiGet(
         path: String,
@@ -151,35 +159,119 @@ class ParserViewModel : ViewModel() {
         requireRepo: Boolean = false
     ): ApiResult {
         val url = "https://api.github.com" + path
-        // 加速前缀可能返回 HTTP 200 的中转站首页：内容不是 JSON 同样视为失败，
-        // 不能等到 JSONObject 解析时才失败，否则不会触发直连重试
-        fun fetch(direct: Boolean): String {
-            val body = Net.get(url, settings.token, direct = direct, timeoutMs = timeoutMs)
-            if (!isGithubApiJson(body)) {
-                throw RuntimeException("返回内容不是 GitHub API 响应")
-            }
-            // 中转站可能以 HTTP 200 返回 {"message":"..."}：只校验首字符会把它当成仓库。
-            if (requireRepo && !body.contains("\"full_name\"")) {
-                throw RuntimeException("API 返回内容缺少仓库信息")
-            }
-            return body
+
+        // 单次请求结果封装到 [Slot]，异常不外抛，便于区分各线路的失败原因。
+        class Slot(val direct: Boolean, val body: String?, val err: Throwable?)
+
+        fun validate(body: String): Slot? = when {
+            // 加速前缀可能返回 HTTP 200 的中转站首页：内容不是 JSON 同样视为失败。
+            !isGithubApiJson(body) -> Slot(true, null, RuntimeException("返回内容不是 GitHub API 响应"))
+            requireRepo && !body.contains("\"full_name\"") ->
+                Slot(true, null, RuntimeException("API 返回内容缺少仓库信息"))
+            else -> null
         }
-        try {
-            return ApiResult(fetch(direct = false), false)
+
+        fun attempt(direct: Boolean, to: Long): Slot {
+            return try {
+                val body = Net.get(url, settings.token, direct = direct, timeoutMs = to)
+                validate(body) ?: Slot(direct, body, null)
+            } catch (e: Exception) {
+                // 直连线路连接层失败（超时 / TLS 重置 / 解析不到）：精准回收 api.github.com
+                // 的优选结果与空闲连接，使下一次请求重新建连，无需重启 App。
+                if (e is java.io.IOException && direct) Net.evictOnFailure("api.github.com")
+                Slot(direct, null, e)
+            }
+        }
+
+        // 经「指定前缀」请求：把 URL 预先拼好前缀，用不挂拦截器的直连客户端发出
+        // （direct=true → browseClient）。此时 host 是中转域，Net 的 authTokenFor 会自动不携带
+        // token —— 因此无论池里怎么换前缀，用户令牌都不会发给任何第三方中转。
+        fun attemptPrefixed(p: String, to: Long): Slot {
+            val full = com.gh.dl.data.Accel.rewriteWith(url, p)
+            return try {
+                val body = Net.get(full, settings.token, direct = true, timeoutMs = to)
+                validate(body) ?: Slot(false, body, null)
+            } catch (e: Exception) {
+                Slot(false, null, e)
+            }
+        }
+
+        // 未开启加速：只有直连这一条线路，单次请求。
+        if (!com.gh.dl.data.Accel.enabled()) {
+            val s = attempt(direct = false, to = timeoutMs)
+            s.err?.let { throw it }
+            return ApiResult(s.body!!, false)
+        }
+
+        // 线路优先级：前缀池先轮、直连最后短超时兜底。
+        // 为什么不是「直连优先」——实测公共前缀对 api.github.com 是 **403 快失败**（秒回），
+        // 而直连不通要**卡满整个超时**才失败；所以先轮前缀其实更快，把直连放最后只赌一次短的。
+        // （上一版把直连提到最前，导致每个请求先卡 12s，反而更慢、更易整体失败，已回退。）
+        // 前缀轮换仍是「以此类推」：快失败秒跳过、冷却跳过、粘性优先、单前缀给足超时。
+        val pool = com.gh.dl.data.Accel.pickApi()
+        val perPrefix = timeoutMs
+        val softDeadline = System.currentTimeMillis() + 40_000
+        val reasons = ArrayList<String>()
+        var tried = 0
+        var skippedCooling = 0
+        for (p in pool) {
+            if (tried > 0 && System.currentTimeMillis() >= softDeadline) break
+            if (com.gh.dl.data.Accel.apiCooling(p)) { skippedCooling++; continue }
+            val s = attemptPrefixed(p, perPrefix)
+            tried++
+            if (s.body != null) {
+                com.gh.dl.data.Accel.markApi(p, true)
+                return ApiResult(s.body, false)
+            }
+            com.gh.dl.data.Accel.markApi(p, false)
+            if (s.err is com.gh.dl.data.HttpException && (s.err as com.gh.dl.data.HttpException).code == 401)
+                throw s.err
+            reasons.add("${p.substringAfter("://").take(22)}：${describe(s.err ?: RuntimeException("超时"))}")
+        }
+        // 前缀都不行 → 最后短超时赌一次直连（通就用，不通就到此为止，交给上层 atom / 镜像兜底）。
+        val direct = attempt(direct = true, to = 6_000)
+        if (direct.body != null) return ApiResult(direct.body, true)
+        val relayNote = when {
+            tried == 0 && skippedCooling > 0 -> "前缀均在冷却（$skippedCooling 个）"
+            else -> reasons.take(3).joinToString("；")
+        }
+        throw RuntimeException("加速前缀均失败（$relayNote）；直连失败（${describe(direct.err ?: RuntimeException("超时"))}）")
+    }
+
+    /** 拉取官方 API 的第 [page] 页 Release（每页 10 条）。返回（列表, 错误原因）；
+     *  错误原因为空串表示成功（含「仓库确实没有 Release」这一空结果情况）。 */
+    private fun fetchReleasePage(s: String, page: Int): Pair<List<com.gh.dl.data.Release>, String> {
+        return try {
+            val list = parseReleases(JSONArray(apiGet("/repos/$s/releases?per_page=10&page=$page", timeoutMs = 12_000).body))
+            list to ""
         } catch (e: Exception) {
-            // 令牌无效属确定性错误，换线路无意义
-            if (e is com.gh.dl.data.HttpException && e.code == 401) throw e
-            // 未启用加速时不存在「另一条线路」：再发一次只会把超时翻倍。
-            // 这也是 1.2.1 更快的原因之一，保持单次请求语义。
-            if (!com.gh.dl.data.Accel.enabled()) throw e
-            val note = describe(e)
-            Net.clearPins()
-            try {
-                return ApiResult(fetch(direct = true), true, note)
-            } catch (e2: Exception) {
-                throw RuntimeException(
-                    "加速前缀失败（$note）；直连失败（${describe(e2)}）", e2
-                )
+            emptyList<com.gh.dl.data.Release>() to describe(e)
+        }
+    }
+
+    /** 分页加载更多 Release：仅在列表来自官方 API 且存在下一页时追加。atom / 镜像兜底不支持分页。 */
+    fun loadMoreReleases(ctx: Context) {
+        val s = slug
+        if (s.isBlank() || !releasesFromApi || !releasesHasMore ||
+            releasesLoading || releasesLoadingMore
+        ) return
+        val my = loadSeq
+        releasesLoadingMore = true
+        releasesMoreError = ""
+        Threads.start("Release 分页") {
+            val (more, err) = fetchReleasePage(s, releasesPage + 1)
+            if (my != loadSeq) return@start
+            MAIN.post {
+                if (my != loadSeq) return@post
+                releasesLoadingMore = false
+                if (err.isNotBlank()) {
+                    releasesMoreError = err
+                    releasesHasMore = false
+                } else {
+                    releases = releases + more
+                    releasesPage += 1
+                    releasesHasMore = more.size >= 10
+                }
             }
         }
     }
@@ -192,6 +284,78 @@ class ParserViewModel : ViewModel() {
         is com.gh.dl.data.HttpException -> "HTTP ${e.code}"
         is org.json.JSONException -> "API 响应格式异常（可能被中转站改写）"
         else -> (e.message ?: e.javaClass.simpleName).take(80)
+    }
+
+    // ---- releases.atom / tags.atom 兜底：绕开 api.github.com，走 github.com 域（文件前缀可代理）----
+    // 真机检测证明公共前缀不代理 API，但会把 github.com 下的 .atom / expanded_assets 当文件转发，
+    // 故 Release 与标签在 API 失败后改走这条「借下载线路拿索引」的路，把解析从「只能直连 API」解放出来。
+
+    /** 经「文件能力」前缀 + 直连抓 github.com 域任意路径；looksValid 用于剔除中转返回首页的假结果。 */
+    private fun fetchGithub(path: String, looksValid: (String) -> Boolean): String? {
+        val url = "https://github.com" + path
+        for (p in com.gh.dl.data.Accel.pickFile()) {
+            val full = com.gh.dl.data.Accel.rewriteWith(url, p)
+            try {
+                val body = Net.get(full, settings.token, direct = true, timeoutMs = 10_000)
+                if (looksValid(body)) { com.gh.dl.data.Accel.markFile(p, true); return body }
+            } catch (e: Exception) { /* 换下一个前缀 */ }
+        }
+        return try {
+            val body = Net.get(url, settings.token, direct = true, timeoutMs = 10_000)
+            if (looksValid(body)) body else null
+        } catch (e: Exception) { null }
+    }
+
+    private val assetHref = Regex("href=\"(/[^\"]+/releases/download/[^\"?]+)\"")
+
+    /** 抓某 tag 的 expanded_assets HTML，解析出二进制资产（文件名 + 下载直链）。 */
+    private fun assetsViaExpandedAssets(slug: String, tag: String): List<com.gh.dl.data.Asset> {
+        val enc = java.net.URLEncoder.encode(tag, "UTF-8").replace("+", "%20")
+        val html = fetchGithub("/$slug/releases/expanded_assets/$enc") {
+            it.contains("/releases/download/")
+        } ?: return emptyList()
+        val out = ArrayList<com.gh.dl.data.Asset>()
+        val seen = HashSet<String>()
+        for (m in assetHref.findAll(html)) {
+            val rel = m.groupValues[1]
+            if (!seen.add(rel)) continue
+            val raw = rel.substringAfterLast('/')
+            val name = runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+            if (name.isNotBlank()) out.add(com.gh.dl.data.Asset(name = name, url = "https://github.com$rel"))
+        }
+        return out
+    }
+
+    /** 用 releases.atom 拿 Release 列表，并逐个补齐二进制资产。 */
+    private fun releasesViaAtom(slug: String): List<com.gh.dl.data.Release> {
+        val xml = fetchGithub("/$slug/releases.atom") { it.contains("<entry") || it.contains("<feed") }
+            ?: return emptyList()
+        val rels = com.gh.dl.data.Atom.parseReleases(xml)
+        if (rels.isEmpty()) return emptyList()
+        return rels.take(10).map { rel ->
+            val a = assetsViaExpandedAssets(slug, rel.tag)
+            if (a.isEmpty()) rel else rel.copy(assets = a)
+        }
+    }
+
+    /** 用 tags.atom 拿标签列表（绕开 API 的 /tags）。 */
+    private fun tagsViaAtom(slug: String): List<String> =
+        fetchGithub("/$slug/tags.atom") { it.contains("<entry") }
+            ?.let { com.gh.dl.data.Atom.parseTags(it).map { p -> p.first } } ?: emptyList()
+
+    /** 用 releases.atom 兜底补齐 Release 并刷新界面；返回拿到的列表（空=未拿到）。
+     *  供「仓库信息成功但 Release API 失败」与「仓库信息也失败」两处复用。 */
+    private fun applyAtomReleases(s: String, my: Int): List<com.gh.dl.data.Release> {
+        val atomRel = try { releasesViaAtom(s) } catch (e: Exception) { emptyList() }
+        if (atomRel.isEmpty()) return atomRel
+        MAIN.post {
+            if (my != loadSeq) return@post
+            releases = atomRel
+            releasesError = ""
+            filter = if (atomRel.any { it.assets.any { x -> osOf(x.name) == "android" } }) "android" else "all"
+            netSummary = "官方 API 不可用 · 已用 GitHub Atom 订阅源补齐 Release"
+        }
+        return atomRel
     }
 
     fun doLoad(ctx: Context, raw: String) {
@@ -209,6 +373,11 @@ class ParserViewModel : ViewModel() {
         releases = emptyList()
         releasesLoading = false
         releasesError = ""
+        releasesPage = 1
+        releasesHasMore = false
+        releasesLoadingMore = false
+        releasesFromApi = false
+        releasesMoreError = ""
         refs = emptyList()
         jsd = false
         jsdTree = emptyList()
@@ -262,51 +431,77 @@ class ParserViewModel : ViewModel() {
                     releasesError = ""
                 }
 
+                // Release：仍走中转，单次串行请求（不并发，避免突发触发中转限流）。
                 var relError = ""
-                val rel = try {
-                    // 与仓库信息走同一套「前缀 → 直连」降级逻辑：
-                    // 部分中转站只代理文件、不代理 API，单次请求失败不应让 Release 永久空白
-                    val rr = apiGet("/repos/$s/releases?per_page=10", timeoutMs = 12_000)
-                    parseReleases(JSONArray(rr.body))
-                } catch (e: Exception) {
-                    relError = describe(e)
-                    emptyList()
-                }
+                val (rel0, relErr0) = fetchReleasePage(s, 1)
+                var rel = rel0
+                relError = relErr0
                 if (my != loadSeq) return@start
-                // Release 一到就先显示，不等待分支 / 标签请求，避免列表长时间空白
                 MAIN.post {
                     if (my != loadSeq) return@post
                     releases = rel
                     releasesError = relError
                     releasesLoading = false
+                    // 仅当列表来自官方 API 且满一页时，才允许「加载更多」翻页；
+                    // atom / 镜像兜底不支持分页，故置 false。
+                    releasesFromApi = (relError.isBlank() && rel.isNotEmpty())
+                    releasesHasMore = releasesFromApi && rel.size >= 10
+                    releasesPage = 1
                     filter = if (rel.any { it.assets.any { x -> osOf(x.name) == "android" } }) {
                         "android"
                     } else {
                         "all"
                     }
                 }
+
+                // API 拿不到 Release → 先试 releases.atom（走 github.com 域，文件前缀可代理，绕开 API）。
+                if (rel.isEmpty() && relError.isNotBlank()) rel = applyAtomReleases(s, my)
+
+                // 官方 Release 拿不到（中转不代理 /releases 或被限流）→ 用国内镜像补齐可下载产物。
+                // 高校镜像 / jsDelivr 境内直连可达、不需要中转，因此不受 GitHub 阻断与中转限流影响，
+                // 这才是贴合本工具「从 GitHub 下东西」根本目的的兜底：不依赖你能否直连 GitHub。
+                // 仅在「确实请求失败」时补齐；仓库本身没有 Release（relError 为空）则无需补。
+                if (rel.isEmpty() && relError.isNotBlank()) {
+                    MAIN.post {
+                        if (my != loadSeq) return@post
+                        netSummary = "官方 Release 获取失败（$relError）· 正在用国内镜像补齐…"
+                    }
+                    val mAll = try {
+                        Mirror.openAll(s, 5, prefer = domesticBase(ctx), budgetMs = 12_000)
+                    } catch (e: Exception) { emptyList() }
+                    if (my != loadSeq) return@start
+                    if (mAll.isNotEmpty()) {
+                        val first = mAll.first().second
+                        MAIN.post {
+                            if (my != loadSeq) return@post
+                            mirrorAll = mAll
+                            mirror = first
+                            mirrorMsg = "官方 Release 不可用（$relError）· 已用国内镜像补齐（${first.mirror}）· 共 ${mAll.size} 个版本"
+                        }
+                    }
+                }
+
+                // 分支 / 标签：可选信息，同样单发串行，失败忽略。
                 val list = ArrayList<Pair<String, String>>()
                 list.add("heads/" + info.defaultBranch to "分支：${info.defaultBranch}（默认）")
                 try {
-                    val a = JSONArray(Net.get(
-                        "https://api.github.com/repos/$s/branches?per_page=40",
-                        settings.token, direct = direct, timeoutMs = 8_000
-                    ))
+                    val a = JSONArray(apiGet("/repos/$s/branches?per_page=40", timeoutMs = 8_000).body)
                     for (i in 0 until a.length()) {
                         val n = a.optJSONObject(i)?.optString("name").orEmpty()
                         if (n.isNotBlank() && n != info.defaultBranch) list.add("heads/$n" to "分支：$n")
                     }
                 } catch (e: Exception) { /* 可选信息，失败忽略 */ }
                 try {
-                    val a = JSONArray(Net.get(
-                        "https://api.github.com/repos/$s/tags?per_page=40",
-                        settings.token, direct = direct, timeoutMs = 8_000
-                    ))
+                    val a = JSONArray(apiGet("/repos/$s/tags?per_page=40", timeoutMs = 8_000).body)
                     for (i in 0 until a.length()) {
                         val n = a.optJSONObject(i)?.optString("name").orEmpty()
                         if (n.isNotBlank()) list.add("tags/$n" to "标签：$n")
                     }
-                } catch (e: Exception) { /* 可选信息，失败忽略 */ }
+                } catch (e: Exception) {
+                    // API 不可用时用 tags.atom 兜底（走 github.com 域，文件前缀可代理）
+                    for (t in tagsViaAtom(s)) if (t.isNotBlank() && list.none { it.first == "tags/$t" })
+                        list.add("tags/$t" to "标签：$t")
+                }
 
                 // 记录历史放在解析成功之后：失败链接只会成为必然报错的无效条目
                 runCatching { History.record(ctx, raw, s, info.fullName) }
@@ -320,7 +515,11 @@ class ParserViewModel : ViewModel() {
                 return@start
             }
 
-            // ---- 2. 国内镜像（官方不可用时） ----
+            // ---- 2. 官方 API 不可用：先试 releases.atom 兜底，再查国内镜像 ----
+            // 仓库信息 API 也失败时，atom 走 github.com 域（文件前缀可代理）仍能拿到 Release，
+            // 让用户至少能看到并下载产物，不必因为拿不到 star/描述就整页失败。
+            applyAtomReleases(s, my)
+            if (my != loadSeq) return@start
             MAIN.post {
                 if (my != loadSeq) return@post
                 netSummary = "官方 API 不可用（$officialError）· 正在查询国内镜像…"

@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.gh.dl.data.HttpException
 import com.gh.dl.data.Search
+import com.gh.dl.data.Settings
 import com.gh.dl.data.Threads
 
 /**
@@ -38,11 +39,25 @@ class SearchViewModel : ViewModel() {
      */
     var githubIndexOn by mutableStateOf(true)
 
+    /** 搜索历史关键词（最近优先，最多 10 条），本地持久化 */
+    var searchHistory by mutableStateOf<List<String>>(emptyList())
+
+    /** 分页加载更多：当前页（首屏=1）、是否还有下一页、是否正在加载下一页 */
+    var searchPage by mutableStateOf(1)
+    var searchHasMore by mutableStateOf(false)
+    var searchLoadingMore by mutableStateOf(false)
+
     /** 子请求限流/跳过的灰色提示（如「Gitee 暂时限流，仅显示 GitHub 结果」），与错误文案分开 */
     var searchHint by mutableStateOf("")
 
     /** 当前 searchMsg 是否为「网络异常」类错误（UI 上可点击重试） */
     var searchIsError by mutableStateOf(false)
+
+    /** 清除搜索历史（内存 + 磁盘） */
+    fun clearSearchHistory(ctx: Context) {
+        searchHistory = emptyList()
+        Settings.saveSearchHistory(ctx, emptyList())
+    }
 
     fun refreshSearch(ctx: Context) {
         if (searchQuery.isBlank()) {
@@ -52,38 +67,57 @@ class SearchViewModel : ViewModel() {
         doSearch(ctx)
     }
 
-    /** 按关键词搜项目：三个源各自独立处理，一个失败不影响其它（修复「国内源」把空结果与失败混为一谈） */
+    /** 按关键词搜项目：重置到第 1 页并替换结果。 */
     fun doSearch(ctx: Context) {
         val q = searchQuery.trim()
         if (q.isBlank()) {
             toast(ctx, "请输入关键词，例如 Python、Java")
             return
         }
+        // 记录搜索历史：去重后置顶，最多保留 10 条，并落盘
+        searchHistory = (listOf(q) + searchHistory.filter { it != q }).take(10)
+        Settings.saveSearchHistory(ctx, searchHistory)
+        runSearch(ctx, page = 1, append = false)
+    }
+
+    /** 分页加载更多：在现有结果后追加下一页（需已有关键词且上一次搜索存在下一页）。 */
+    fun loadMoreSearch(ctx: Context) {
+        val q = searchQuery.trim()
+        if (q.isBlank() || !searchHasMore || searchBusy || searchLoadingMore) return
+        runSearch(ctx, page = searchPage + 1, append = true)
+    }
+
+    private fun runSearch(ctx: Context, page: Int, append: Boolean) {
+        val q = searchQuery.trim()
+        if (q.isBlank()) return
         // 选中的优先镜像站（解析器下拉）中文短名；仅用于为 GitHub 官方源结果标注「可走 XX 镜像下载」。
         val mirror = runCatching { settings.parser.domestic }.getOrNull()?.let { Search.mirrorLabel(it) }
-        searchBusy = true
-        searchMsg = "正在搜索「$q」…"
-        searchHint = ""
-        searchIsError = false
-        searchResults = emptyList()
+        if (append) searchLoadingMore = true else searchBusy = true
+        if (!append) {
+            searchMsg = "正在搜索「$q」…"
+            searchHint = ""
+            searchIsError = false
+            searchResults = emptyList()
+        }
         Threads.start("搜索") {
-            // 三个分支内部各有 runCatching，但镜像列表解析等步骤仍可能抛出；
-            // 外层兜底保证 searchBusy 必然复位，避免搜索框长期停留在「正在搜索」
+            // 各分支内部各有 runCatching，但镜像列表解析等步骤仍可能抛出；
+            // 外层兜底保证 busy 标志必然复位，避免搜索框长期停留在「正在搜索」。
             val outcome = try {
                 when (searchSource) {
-                    "foreign" -> searchForeign(q)
-                    "domestic" -> searchDomestic(q, mirror)
-                    else -> searchGithubOnly(q, mirror)
+                    "foreign" -> searchForeign(q, page)
+                    "domestic" -> searchDomestic(q, mirror, page)
+                    else -> searchGithubOnly(q, mirror, page)
                 }
             } catch (e: Throwable) {
                 Outcome(emptyList(), "搜索失败：${e.message ?: e.javaClass.simpleName}", isError = true)
             }
             MAIN.post {
-                searchBusy = false
-                searchResults = outcome.results
+                if (append) searchLoadingMore = false else searchBusy = false
+                searchResults = if (append) searchResults + outcome.results else outcome.results
+                searchPage = page
+                searchHasMore = outcome.hasMore
                 searchMsg = outcome.msg
-                searchHint = outcome.hint
-                searchIsError = outcome.isError
+                if (!append) { searchHint = outcome.hint; searchIsError = outcome.isError }
             }
         }
     }
@@ -93,7 +127,8 @@ class SearchViewModel : ViewModel() {
         val results: List<Search.Hit>,
         val msg: String,
         val hint: String = "",
-        val isError: Boolean = false
+        val isError: Boolean = false,
+        val hasMore: Boolean = false
     )
 
     /** 给 GitHub 官方源结果打上优先镜像站标签（仅 github 源；镜像站只代理 Release，不代理搜索） */
@@ -101,33 +136,37 @@ class SearchViewModel : ViewModel() {
         if (mirror != null && h.source == "github") h.copy(mirrorLabel = mirror) else h
 
     /** GitHub 源（或国内源里的 GitHub 索引部分）：直连 api.github.com，失败回退前缀已由 [com.gh.dl.data.Accel] 处理 */
-    private fun searchGithubOnly(q: String, mirror: String?): Outcome {
+    private fun searchGithubOnly(q: String, mirror: String?, page: Int): Outcome {
         if (!githubIndexOn) return Outcome(emptyList(), "未找到与「$q」相关的仓库")
         return try {
-            val hits = Search.github(q).map { tagMirror(it, mirror) }
-            Outcome(hits, if (hits.isEmpty()) "未找到与「$q」相关的仓库" else "找到 ${hits.size} 个仓库")
+            val (hits, more) = Search.github(q, page)
+            val tagged = hits.map { tagMirror(it, mirror) }
+            val msg = if (tagged.isEmpty()) "未找到与「$q」相关的仓库"
+                      else "已加载 ${searchResults.size + tagged.size} 个仓库" + if (more) "，可能还有更多" else "（已到末尾）"
+            Outcome(tagged, msg, hasMore = more)
         } catch (e: Exception) {
-            // 使用友好提示文案，原始异常与响应体仅写入 Logcat，不在 Release 版本中暴露给用户
             Log.e("Search", "github search failed; q=$q", e)
             Outcome(emptyList(), "GitHub API 暂时无响应，点此重试", isError = true)
         }
     }
 
-    /** 外国源：GitLab + Codeberg 并发请求，任一失败静默跳过，不影响另一个。
-     *  注意：网络层失败（超时/DNS/连接拒绝）无 HTTP 状态码，须使用独立布尔标志记录，
-     *  否则会将「全部失败」误判为「搜到但结果为空」。 */
-    private fun searchForeign(q: String): Outcome {
+    /** 外国源：GitLab + Codeberg 分页；某一后端失败时静默跳过，不影响另一个。 */
+    private fun searchForeign(q: String, page: Int): Outcome {
         var glFailed = false
         var cbFailed = false
-        val gl = runCatching { Search.gitlab(q) }.getOrElse { glFailed = true; emptyList() }
-        val cb = runCatching { Search.codeberg(q) }.getOrElse { cbFailed = true; emptyList() }
+        val (gl, glMore) = runCatching { Search.gitlab(q, page) }.getOrElse { glFailed = true; emptyList<Search.Hit>() to false }
+        val (cb, cbMore) = runCatching { Search.codeberg(q, page) }.getOrElse { cbFailed = true; emptyList<Search.Hit>() to false }
         val all = gl + cb
         val failed = listOfNotNull(
             if (glFailed) "GitLab" else null,
             if (cbFailed) "Codeberg" else null
         )
         return when {
-            all.isNotEmpty() -> Outcome(all, "找到 ${all.size} 个仓库")
+            all.isNotEmpty() -> Outcome(
+                results = all,
+                msg = "已加载 ${searchResults.size + all.size} 个仓库",
+                hasMore = glMore || cbMore
+            )
             failed.isNotEmpty() ->
                 Outcome(emptyList(), "网络异常，${failed.joinToString("、")}请求失败，点此重试", isError = true)
             else -> Outcome(emptyList(), "未找到与「$q」相关的仓库")
@@ -135,17 +174,19 @@ class SearchViewModel : ViewModel() {
     }
 
     /** 国内源：GitHub 索引 + Gitee + GitCode 三个后端各自独立，一个失败不影响其它 */
-    private fun searchDomestic(q: String, mirror: String?): Outcome {
-        // 失败标志与 HTTP 错误码分开记录：网络超时（无状态码）也计为失败
+    private fun searchDomestic(q: String, mirror: String?, page: Int): Outcome {
         var ghFailed = false; var ghCode: Int? = null
         var geFailed = false; var geCode: Int? = null
         var gcFailed = false
         var geRate = false
+        var ghMore = false; var geMore = false; var gcMore = false
 
         // a. GitHub 官方索引（高校镜像不提供搜索 API，复用官方索引）
         val gh = if (githubIndexOn) {
             try {
-                Search.github(q).map { tagMirror(it, mirror).copy(domestic = true) }
+                val (hits, more) = Search.github(q, page)
+                ghMore = more
+                hits.map { tagMirror(it, mirror).copy(domestic = true) }
             } catch (e: Exception) {
                 ghFailed = true; ghCode = httpCode(e)
                 Log.e("Search", "domestic github part failed; q=$q", e)
@@ -155,7 +196,9 @@ class SearchViewModel : ViewModel() {
 
         // b. Gitee 匿名搜索；403/429 视为限流，结果区显示一行灰色提示，不将整个搜索标红
         val ge = try {
-            Search.gitee(q)
+            val (hits, more) = Search.gitee(q, page)
+            geMore = more
+            hits
         } catch (e: Exception) {
             geFailed = true; geCode = httpCode(e)
             if (geCode == 403 || geCode == 429) geRate = true
@@ -163,9 +206,13 @@ class SearchViewModel : ViewModel() {
             emptyList()
         }
 
-        // c. GitCode：未在设置中配置 access_token 时直接跳过（不发送请求导致 401）；已配置时携带令牌请求
+        // c. GitCode：未配置 token 时直接跳过（不发 401）；已配置时携带令牌请求
         val gc = if (AppState.gitcodeToken.isNotBlank()) {
-            try { Search.gitcode(q) } catch (e: Exception) {
+            try {
+                val (hits, more) = Search.gitcode(q, page = page)
+                gcMore = more
+                hits
+            } catch (e: Exception) {
                 gcFailed = true
                 Log.e("Search", "gitcode part failed (skipped); q=$q", e)
                 emptyList()
@@ -182,9 +229,14 @@ class SearchViewModel : ViewModel() {
         return when {
             all.isNotEmpty() -> {
                 val hint = if (geRate) "Gitee 暂时限流，仅显示 GitHub 结果" else ""
-                Outcome(all, "找到 ${all.size} 个仓库", hint = hint)
+                val more = ghMore || geMore || gcMore
+                Outcome(
+                    results = all,
+                    msg = "已加载 ${searchResults.size + all.size} 个仓库",
+                    hint = hint,
+                    hasMore = more
+                )
             }
-            // 有结果时不受失败影响；无结果但确有后端失败时 → 报告网络错误，不误报「未找到」
             failed.isNotEmpty() ->
                 Outcome(emptyList(), "网络异常，${failed.joinToString("、")}请求失败$codeText，点此重试", isError = true)
             else -> Outcome(emptyList(), "未找到与「$q」相关的仓库")

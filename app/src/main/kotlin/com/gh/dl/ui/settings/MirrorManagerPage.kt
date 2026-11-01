@@ -107,12 +107,6 @@ fun MirrorManagerPage(onBack: () -> Unit) {
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                CollapsibleNote(
-                    "镜像源用途说明",
-                    "高校镜像（清华 · 华为云 · 中科大等）作为直连下载目标，用于获取 GitHub Release 与源码包。\n" +
-                        "默认镜像决定「国内镜像」线路的下载地址；支持导入自建或内网节点，可删除与测速排序。\n" +
-                        "此类镜像仅用于下载，与「设置 → 加速 → 浏览加速」的网页镜像站不同。"
-                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -215,13 +209,6 @@ fun MirrorManagerPage(onBack: () -> Unit) {
             }
         }
 
-        Spacer(Modifier.height(8.dp))
-        CollapsibleNote(
-            "边界说明",
-            "此类镜像直连下载 GitHub 公开资源，不涉及私有仓库与 SSH。\n" +
-                "下载加速前缀（ghproxy 类）在「设置 → 加速 → 下载加速」管理，" +
-                "网页镜像站在「设置 → 加速 → 浏览加速」管理，三者互不影响。"
-        )
     }
 
     if (showAdd) {

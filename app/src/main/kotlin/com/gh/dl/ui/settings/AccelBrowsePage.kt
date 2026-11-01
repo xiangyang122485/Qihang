@@ -61,16 +61,6 @@ fun AccelBrowsePage(onBack: () -> Unit) {
     ) {
         SubTitle("浏览加速", onBack)
 
-        CollapsibleNote(
-            "浏览加速说明",
-            "浏览页不直接联网：内容经抓取器获取（curl 类 UA）并净化后在本地渲染，" +
-                "本档决定从哪个网页镜像站抓取。\n" +
-                "· 文件加速前缀仅作用于文件下载，无法代理网页，故本档需单独配置镜像站；\n" +
-                "· 此类站点仅放行 git/curl 类 UA，浏览器访问返回 403，加速仅对应用内浏览有效；\n" +
-                "· 本档默认关闭，开启后页面内容经由第三方镜像站。\n" +
-                "本档与「设置 → 网络 → DoH + 真实 IP 优选」均关闭时，国内网络环境可能无法访问，" +
-                "此为不自动改道的预期行为；需要访问时启用其中一档。"
-        )
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
@@ -96,12 +86,6 @@ fun AccelBrowsePage(onBack: () -> Unit) {
                     IconButton(onClick = { showAdd = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "添加镜像站", tint = MaterialTheme.colorScheme.primary)
                     }
-                }
-                if (vm.browseMirrors.isEmpty()) {
-                    Text(
-                        "列表为空时自动使用内置的 " + GhView.DEFAULT_PAGE_MIRROR.removePrefix("https://") + "。",
-                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
                 vm.browseMirrors.forEachIndexed { i, m ->
                     Row(
@@ -171,10 +155,6 @@ fun AccelBrowsePage(onBack: () -> Unit) {
             }
         }
 
-        Text(
-            "网页镜像站域名更换频繁，可通过「测速」验证可用性后调整顺序。",
-            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 
     if (showAdd) {

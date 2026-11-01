@@ -51,14 +51,6 @@ fun AccelDownloadPage(onBack: () -> Unit) {
     ) {
         SubTitle("下载加速", onBack)
 
-        CollapsibleNote(
-            "下载加速说明",
-            "原理：在 GitHub 文件链接前拼接前缀，由第三方中转代拉后回传。\n" +
-                "· 仅作用于文件（Release、raw、源码包、jsDelivr）；网页无法经此代理，见「浏览加速」；\n" +
-                "· 公共前缀任何人可搭建，存在替换文件内容的可能，域名亦可能变更，" +
-                "故本档默认关闭，并默认启用「下载后强制校验 SHA256」；\n" +
-                "· 启用时 GitHub Token 不发送至中转，令牌仅用于官方域名。"
-        )
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -162,3 +154,4 @@ fun AccelDownloadPage(onBack: () -> Unit) {
 
     if (showAdd) AddPrefixDialog(onClose = { showAdd = false })
 }
+

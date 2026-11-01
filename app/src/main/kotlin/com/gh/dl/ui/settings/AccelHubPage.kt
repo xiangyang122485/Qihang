@@ -58,13 +58,5 @@ fun AccelHubPage(nav: NavHostController, onBack: () -> Unit) {
             onClick = { nav.navigate(SettingsRoute.AccelBrowse.route) }
         )
 
-        CollapsibleNote(
-            "两档机制差异",
-            "下载前缀是文件中转，仅识别 /raw、/releases/download、/archive 类地址，" +
-                "处理仓库主页时返回其自身首页。\n" +
-                "网页镜像站仅放行 git / curl 类命令行 UA，浏览器 UA 返回 403。\n" +
-                "两者不可互换，故分为两档。顶栏闪电图标按所在页面生效：" +
-                "解析器与搜索页切换「下载加速」，浏览页切换「浏览加速」。"
-        )
     }
 }

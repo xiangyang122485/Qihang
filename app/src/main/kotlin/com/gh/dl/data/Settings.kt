@@ -69,6 +69,13 @@ object Settings {
     fun saveBrowseMirrors(ctx: Context, list: List<String>) {
         put(ctx, "browseMirrors", jsonList(list))
     }
+
+    /** 搜索历史（本地持久化，最多 10 条，最近优先） */
+    fun loadSearchHistory(ctx: Context): List<String> = parseList(get(ctx, "searchHistory"))
+
+    fun saveSearchHistory(ctx: Context, list: List<String>) {
+        put(ctx, "searchHistory", jsonList(list.take(10)))
+    }
 }
 
 object Channels {

@@ -195,12 +195,6 @@ fun PermissionsPage(onBack: () -> Unit) {
             }
         )
 
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "应用仅申请网络权限。文件写入使用系统文件授权框架（SAF），授权范围限于所选文件夹。" +
-                "通知与电池优化均为可选项，拒绝不影响下载。",
-            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -215,7 +209,7 @@ private fun PermissionRow(
 ) {
     Card(
         Modifier.fillMaxWidth().clickable { onClick() },
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {

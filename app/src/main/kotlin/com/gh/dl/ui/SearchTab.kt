@@ -17,12 +17,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,12 +41,16 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.History
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -63,6 +70,13 @@ fun SearchTab() {
         modifier = Modifier.fillMaxWidth().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        item {
+            GhGradientBanner(
+                title = "搜索项目",
+                subtitle = "GitHub · GitLab · Codeberg · Gitee · GitCode",
+                icon = Icons.Filled.Search
+            )
+        }
         // ---- 源选择 ----
         item {
             GhCard(Modifier.fillMaxWidth()) {
@@ -90,14 +104,7 @@ fun SearchTab() {
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("启用 GitHub 索引", fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "开启后搜索 api.github.com，关闭后仅搜索国内源与外国源",
-                                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text("启用 GitHub 索引", fontWeight = FontWeight.Medium, fontSize = 13.sp, modifier = Modifier.weight(1f))
                         Switch(
                             checked = vmSearch.githubIndexOn,
                             onCheckedChange = {
@@ -108,7 +115,7 @@ fun SearchTab() {
                     }
                     if (vmSearch.searchSource == "domestic") {
                         Spacer(Modifier.height(10.dp))
-                        Text("优先镜像站（选中后 Release 经该镜像站下载）：", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("优先镜像站", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(6.dp))
                         Row(
                             Modifier.horizontalScroll(rememberScrollState()),
@@ -125,21 +132,7 @@ fun SearchTab() {
                                 }
                             }
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "国内源 = GitHub 索引（标注「国内镜像可下」，Release 经镜像站下载）+ Gitee / GitCode。" +
-                                "高校镜像站无关键词搜索 API，GitHub 部分复用官方索引。",
-                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "GitCode 需在设置中配置 access_token，未配置时跳过该源。",
-                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (vmSearch.searchSource == "foreign") {
-                        Spacer(Modifier.height(6.dp))
-                        Text("外国源 = GitLab.com + Codeberg（境外代码托管平台，自带公开搜索 API）。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
                     }
                 }
             }
@@ -154,7 +147,14 @@ fun SearchTab() {
                     modifier = Modifier.weight(1f),
                     label = { Text("搜索项目 / 文件 / 源码") },
                     placeholder = { Text("例如 Python、Java、fzf") },
-                    singleLine = true
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Search
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onSearch = { if (!vmSearch.searchBusy) vmSearch.doSearch(ctx) }
+                    )
                 )
                 Spacer(Modifier.width(8.dp))
                 TextButton(onClick = { vmSearch.doSearch(ctx) }, enabled = !vmSearch.searchBusy) {
@@ -164,6 +164,34 @@ fun SearchTab() {
         }
 
         if (vmSearch.searchQuery.isBlank()) {
+            // ---- 搜索历史（本地持久，可点击复搜 / 一键清除）----
+            if (vmSearch.searchHistory.isNotEmpty()) item {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("搜索历史", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { vmSearch.clearSearchHistory(ctx) }) {
+                            Text("清除", fontSize = 12.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        vmSearch.searchHistory.forEach { kw ->
+                            AssistChip(
+                                onClick = { vmSearch.searchQuery = kw; vmSearch.doSearch(ctx) },
+                                label = { Text(kw, fontSize = 12.sp) },
+                                leadingIcon = { Icon(Icons.Filled.History, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 Column(Modifier.fillMaxWidth()) {
                     Text("热门搜索", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -196,8 +224,25 @@ fun SearchTab() {
 
         // ---- 结果 ----
         // 同样指定稳定 key：搜索结果为分页/换关键词追加模式，未指定 key 时整列卡片会重排
-        items(vmSearch.searchResults, key = { "res-" + it.fullName }) { h ->
+        items(vmSearch.searchResults, key = { "res-" + it.source + "-" + it.fullName }) { h ->
             SearchResultCard(h)
+        }
+
+        // ---- 分页加载更多 ----
+        if (!vmSearch.searchBusy && vmSearch.searchResults.isNotEmpty()) {
+            if (vmSearch.searchLoadingMore) {
+                item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { LinearProgressIndicator(Modifier.fillMaxWidth()) } }
+            } else if (vmSearch.searchHasMore) {
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        Button(onClick = { vmSearch.loadMoreSearch(ctx) }) { Text("加载更多") }
+                    }
+                }
+            } else {
+                item {
+                    Text("已加载全部结果", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                }
+            }
         }
     }
 }

@@ -160,6 +160,10 @@ class DownloadsViewModel : ViewModel() {
         job.running = true
         job.msg = if (resume) "继续下载…" else "下载中…"
         val real = Channels.file(settings.channel, settings.custom, url)
+        // 记录本次下载实际使用的前缀（real = "前缀/https://…"），成功/失败后据此更新该前缀的
+        // 文件健康度：失效前缀会被冷却，重试或下一次下载自动换到池里下一个可用前缀。
+        val usedPrefix =
+            if (real != url && real.contains("/https://")) real.substringBefore("/https://") else ""
         val engine = settings.dlEngine
         val cancelHolder = AtomicReference<(() -> Unit)?>(null)
         // 前台服务 + 唤醒锁：切换后台或锁屏后仍可完成下载
@@ -204,6 +208,7 @@ class DownloadsViewModel : ViewModel() {
                         cancelHolder, resume, totalHint, jobKey = job.id)
                 }
                 MAIN.post { job.sha = saved.sha }
+                if (usedPrefix.isNotBlank()) com.gh.dl.data.Accel.markFile(usedPrefix, true)
                 val verify = if (settings.verifyOn) {
                     if (!officialSha.isNullOrBlank()) {
                         if (saved.sha.equals(officialSha, true))
@@ -243,6 +248,7 @@ class DownloadsViewModel : ViewModel() {
                     persist(ctx)
                 }
             } catch (e: Exception) {
+                if (usedPrefix.isNotBlank()) com.gh.dl.data.Accel.markFile(usedPrefix, false)
                 MAIN.post {
                     job.running = false
                     job.failed = true
@@ -504,5 +510,18 @@ class DownloadsViewModel : ViewModel() {
         dlMultiSelect = false
         toast(ctx, "已删除 ${ids.size} 条下载记录")
         persist(ctx)
+    }
+
+    /** 删除单个下载任务记录（不触碰磁盘上已下载好的文件）；正在下载的先中断传输。
+     *  与批量删除同一套收尾逻辑：中断后交给工作线程清理临时文件，避免与仍在运行的线程争抢。 */
+    fun deleteDownload(ctx: Context, job: DlJob) {
+        if (job.running) pauseDownload(job)
+        downloads.removeAll { it.id == job.id }
+        dlQueue.removeAll { it.first == job.id }
+        // pauseDownload 为异步：若此刻仍在传输则不在此删临时文件，留给工作线程收尾
+        if (!job.running) Fetch.dropTemp(ctx, job.id, job.name)
+        dlSel.remove(job.id)
+        persist(ctx)
+        toast(ctx, "已删除：${job.name}")
     }
 }

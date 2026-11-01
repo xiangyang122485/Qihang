@@ -95,15 +95,6 @@ fun DownloadPage(onBack: () -> Unit) {
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("文件下载引擎", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                CollapsibleNote(
-                    "引擎说明",
-                    "内置引擎将文件切块后多线程下载，对支持 Range 的源（GitHub Release、jsDelivr、高校镜像）" +
-                        "速度提升明显。引擎在设备上表现不佳时，可用解析页文件行的「复制 / 分享直链」" +
-                        "将最终地址交由其他下载器。\n" +
-                        "· OkDownload（默认）：JVM 多线程分片；\n" +
-                        "· Aria2：原生 aria2c，内置 arm64 二进制，其他架构回退单线程；\n" +
-                        "· 兼容单线程：OkHttp 直连，不提速，兼容性最好。"
-                )
                 Spacer(Modifier.height(4.dp))
                 Text("当前引擎", fontSize = 13.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -168,24 +159,10 @@ fun DownloadPage(onBack: () -> Unit) {
                         }) { Text("取消授权", color = MaterialTheme.colorScheme.error) }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                CollapsibleNote(
-                    "授权机制说明",
-                    "采用系统文件授权框架（SAF）：授权后应用仅获得所选文件夹的读写权限，" +
-                        "不需要存储权限，也不访问其他位置。建议新建专用文件夹（如「GitHub下载」）；" +
-                        "选择存储根目录时，应用在其中创建 GitHub下载器 子目录。"
-                )
             }
         }
 
         // ---- 共享目录 vs 私有目录 说明（原 SharedDirPage / PrivateDirPage 合并） ----
-        CollapsibleNote(
-            "共享目录与私有目录",
-            "共享目录为用户授权的文件夹，文件写入其 GitHub下载器/ 子目录，可由文件管理器访问；" +
-                "未设置时文件全部写入私有目录。\n" +
-                "私有目录为应用自身的 files 目录（Android/data/com.gh.dl/files/），随应用卸载删除，无需授权。\n" +
-                "两者仅存放已下载完成的文件，清除缓存不影响其中内容。"
-        )
 
         // ---- 缓存占用与清除（原 SharedDirPage / PrivateDirPage 的缓存清除合并） ----
         GhCard(Modifier.fillMaxWidth()) {
@@ -195,11 +172,6 @@ fun DownloadPage(onBack: () -> Unit) {
                 Text(
                     "当前缓存占用：" + (if (cacheSize < 0) "统计中…" else fmtSize(cacheSize)),
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "仅清理缓存目录（cache），不删除已下载完成的文件。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = { confirm = true }) { Text("清除缓存") }

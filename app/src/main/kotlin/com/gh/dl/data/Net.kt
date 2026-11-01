@@ -236,6 +236,23 @@ object Net {
     }
 
     /**
+     * 某条线路发生「连接层」失败（超时 / TLS 重置 / 解析不到）后，精准丢弃该域名的优选结果
+     * 并回收空闲连接，使下一次请求重新解析、重新建连。
+     *
+     * 与 [clearPins] 的区别：只处理这一个 host，不清空全部优选表，也不影响其它域名正在
+     * 复用的连接。这正是「Release 刷不出来、重启 App 才好」的根因修复之一：
+     * 重启之所以有效，是因为它顺带清掉了进程内一条已半死的 keep-alive 连接与失效优选 IP；
+     * 这里在失败时就主动回收，用户无需再重启。
+     * evictAll 仅回收空闲连接，进行中的传输不受影响。
+     */
+    fun evictOnFailure(host: String) {
+        if (host.isBlank()) return
+        unpin(host)
+        client.connectionPool.evictAll()
+        browseClient.connectionPool.evictAll()
+    }
+
+    /**
      * 判断该域名通过 [browse]/[http] 访问时能否获取优选 IP——判定逻辑必须与上方 dns() 的复用规则一致，
      * 否则浏览页会出现「实际可用但判断为不可用」的情况，导致探测无效且未接管请求。
      * 三层判断：精确命中 → 同组复用 → 父域后缀复用。

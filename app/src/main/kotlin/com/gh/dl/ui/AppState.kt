@@ -151,6 +151,12 @@ object AppState {
     // [SettingsViewModel] 持有并写入，这里保留为「全局真值源」供非界面消费者读取；
     // SettingsViewModel 的对应属性以 get/set 委托到此处，保证 UI 改动与 data 层读取一致。
     var custom by mutableStateOf("")
+    /**
+     * 用户已保存的加速前缀列表（不含当前 custom）。由 [com.gh.dl.ui.SettingsViewModel] 在
+     * 设置变更时同步；data 层的 [com.gh.dl.data.Accel] 不读 ViewModel，靠此全局字段拿到完整候选池，
+     * 从而实现「一个前缀不可达时自动换下一个」。
+     */
+    var accelPool by mutableStateOf<List<String>>(emptyList())
     var token by mutableStateOf("")
     /** GitCode（gitcode.com）访问令牌；留空时国内源搜索跳过 GitCode（避免无令牌直接发送导致 401） */
     var gitcodeToken by mutableStateOf("")

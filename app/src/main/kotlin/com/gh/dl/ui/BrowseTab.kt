@@ -242,19 +242,9 @@ fun BrowseEmptyHint() {
         Text("暂无浏览内容", fontSize = 15.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
         Text(
-            "在「解析器」页或「搜索」结果中点「浏览」，" +
-                "此处显示对应仓库页面（README、文件列表、Releases、Issues）。",
+            "从「解析器」或「搜索」点「浏览」打开仓库页面。",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "正文由应用抓取后在本地渲染，WebView 不联网、不执行 JS，也不加载外部脚本与图片。" +
-                "顶栏加速按钮控制「浏览加速」，与解析器页的下载加速相互独立：" +
-                "开启时优先使用网页镜像站，失败后直连 GitHub；关闭时仅直连。" +
-                "网页镜像站仅放行 git/curl 类 UA，其页面在普通浏览器内核中不可用。",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.outline
         )
     }
 }

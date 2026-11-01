@@ -33,8 +33,14 @@ object Accel {
      * 第三方中转可能变更或失效，用户仍可在设置中自行增删。
      */
     val BUILT_IN_PREFIXES = listOf(
-        "https://gh-proxy.com",
-        "https://gh-proxy.org"
+        // 2026-11 国内真机「检测前缀能力」实测收敛：以下 3 个「文件下载」能力可用，
+        // 用于加速 Release / raw / 源码包下载。注意它们的 API 能力均为 ✗（403 / 超时），
+        // 即不能加速 api.github.com —— 解析仓库 / Release 列表不能依赖这些前缀。
+        "https://gh-proxy.com",   // 文件 ✓（~0.8s）
+        "https://gh-proxy.org",   // 文件 ✓（~2.8s）
+        "https://ghfast.top"      // 文件 ✓（~0.5s）
+        // 已删除（实测 API 与文件均不可用）：ghproxy.net、github.moeyy.xyz、
+        // gh.llkk.cc、hub.gitmirror.com、mirror.ghproxy.com
     )
 
     /** GitHub 官方可添加前缀的主机（含 *.github.com） */
@@ -136,10 +142,11 @@ object Accel {
         return "$p/$url"
     }
 
-    /** 将 URL 改写为「前缀 + 原 URL」；不满足规则或已添加前缀则原样返回（幂等操作） */
+    /** 将 URL 改写为「前缀 + 原 URL」；不满足规则或已添加前缀则原样返回（幂等操作）。
+     *  下载走文件能力最优的前缀（custom 优先、健康度排序），使某个前缀失效时自动换下一个。 */
     fun rewrite(url: String): String {
         if (!shouldPrefix(url)) return url
-        val p = prefix()
+        val p = pickFile().firstOrNull() ?: prefix()
         return rewriteWith(url, p)
     }
 
@@ -171,4 +178,91 @@ object Accel {
         }
         chain.proceed(req)
     }
+
+    // =====================================================================
+    //  前缀池 + 健康度 + 自动故障切换
+    //
+    //  设计要点（对应用户诉求「一个前缀不可达时立刻换下一个」）：
+    //   - 候选前缀 = 用户 custom 最前 + 用户已保存列表 + 内置列表，规范化去重。
+    //   - 分别记录「API 能力」与「文件能力」的健康度：很多 ghproxy 只代理文件、
+    //     不代理 api.github.com（实测 ghfast.top 即文件 200 / API 403），两种能力要分开记分。
+    //   - 失败的前缀按连续失败次数进入递增冷却（最多 60s），冷却期内排到候选末尾；
+    //     成功即清零。于是「限时」变成「每个前缀各自的预算」，一个卡住/失效会立刻试下一个，
+    //     而不是整次解析失败——这正是把「用户反复刷新」变成「程序自动换线」的关键。
+    // =====================================================================
+
+    /** 全部候选前缀：custom 最前，其后用户保存列表，最后内置；均已规范化、去重、去空。 */
+    fun pool(): List<String> =
+        ((listOf(AppState.custom) + AppState.accelPool + BUILT_IN_PREFIXES)
+            .map { normalizePrefix(it) })
+            .filter { it.isNotBlank() }.distinct()
+
+    private class Health {
+        @Volatile var fails = 0
+        @Volatile var cooldownUntil = 0L
+    }
+
+    private val apiHealth = java.util.concurrent.ConcurrentHashMap<String, Health>()
+    private val fileHealth = java.util.concurrent.ConcurrentHashMap<String, Health>()
+
+    // 粘性：记住「上一次 API / 文件成功用过的前缀」，下次排到候选最前。
+    // 这是把「每次解析都从头扫一遍池子、慢且易整体超时」变成「命中上次的好线路、秒回」的关键。
+    @Volatile private var lastGoodApi = ""
+    @Volatile private var lastGoodFile = ""
+
+    private fun healthOf(
+        map: java.util.concurrent.ConcurrentHashMap<String, Health>, p: String
+    ): Health = map.getOrPut(p) { Health() }
+
+    private fun mark(
+        map: java.util.concurrent.ConcurrentHashMap<String, Health>, p: String, ok: Boolean
+    ) {
+        if (p.isBlank()) return
+        val x = healthOf(map, p)
+        if (ok) {
+            x.fails = 0
+            x.cooldownUntil = 0L
+        } else {
+            x.fails += 1
+            val back = minOf(60_000L, 5_000L * (1L shl minOf(x.fails, 4)))
+            x.cooldownUntil = System.currentTimeMillis() + back
+        }
+    }
+
+    /** 记录某前缀的 API 请求结果（解析路径调用）；成功则记为粘性前缀，下次优先复用 */
+    fun markApi(prefix: String, ok: Boolean) {
+        mark(apiHealth, prefix, ok)
+        if (ok && prefix.isNotBlank()) lastGoodApi = prefix
+    }
+
+    /** 记录某前缀的文件下载结果（下载路径调用）；成功则记为粘性前缀，下次优先复用 */
+    fun markFile(prefix: String, ok: Boolean) {
+        mark(fileHealth, prefix, ok)
+        if (ok && prefix.isNotBlank()) lastGoodFile = prefix
+    }
+
+    private fun pick(
+        map: java.util.concurrent.ConcurrentHashMap<String, Health>, sticky: String
+    ): List<String> {
+        val now = System.currentTimeMillis()
+        // 排序：① 上次成功的前缀（粘性）最前 → ② 未冷却的在前、冷却中的最后 → ③ 失败次数少的优先。
+        // 粘性命中时一次即成功，避免每次都把整池扫一遍而累积成长时间「全部超时」。
+        return pool().sortedWith(
+            compareBy(
+                { it != sticky },
+                { healthOf(map, it).cooldownUntil > now },
+                { healthOf(map, it).fails }
+            )
+        )
+    }
+
+    /** 解析（API）候选前缀顺序：粘性前缀优先，冷却中的排末尾 */
+    fun pickApi(): List<String> = pick(apiHealth, lastGoodApi)
+
+    /** 下载（文件）候选前缀顺序：粘性前缀优先，冷却中的排末尾 */
+    fun pickFile(): List<String> = pick(fileHealth, lastGoodFile)
+
+    /** 某前缀的 API 线路是否仍在冷却中（轮换时可据此跳过，直接换下一个候选） */
+    fun apiCooling(p: String): Boolean =
+        healthOf(apiHealth, p).cooldownUntil > System.currentTimeMillis()
 }

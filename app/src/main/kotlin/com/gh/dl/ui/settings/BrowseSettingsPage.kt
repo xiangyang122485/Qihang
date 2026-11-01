@@ -107,16 +107,6 @@ fun BrowseSettingsPage(onBack: () -> Unit) {
     ) {
         SubTitle("浏览", onBack)
 
-        CollapsibleNote(
-            "本页设置项说明",
-            "本页控制内容获取后的处理方式，获取来源由「设置 → 加速」控制：\n" +
-                "· 静默翻译：非中文正文自动翻译，译文直接替换页面文字；\n" +
-                "· 解析引擎：将 HTML 转换为节点树所采用的规范；\n" +
-                "· 图片：README 图片以本地缓存引用、内联至页面，或不显示；\n" +
-                "· 抓取器：使用内置 OkHttp，或调用 curl / wget；\n" +
-                "· 解析历史：解析器页是否记录已解析的仓库。\n" +
-                "修改后立即生效，下一次抓取或刷新按新设置执行，无需重启。"
-        )
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -154,14 +144,6 @@ fun BrowseSettingsPage(onBack: () -> Unit) {
             }
         }
 
-        CollapsibleNote(
-            "解析引擎说明",
-            "· Jsoup HTML5（默认）：按 html5lib 建树规范解析，自带 CSS 选择器，稳定性最高；\n" +
-                "· XML 模式：按 XML 严格解析，速度快于默认模式，遇未闭合标签时失败并回落默认模式；\n" +
-                "· 先修复再解析：nu.validator.htmlparser（WHATWG 规范实现）先修复再交 Jsoup 解析，容错最强；\n" +
-                "· 仅解析正文：先在原文定位 markdown-body 段落再解析，跳过导航与脚本，处理量最小。\n" +
-                "四档均不对畸形 HTML 抛出异常。"
-        )
 
         GhCard(Modifier.fillMaxWidth()) {
             RadioGroup(
@@ -175,30 +157,8 @@ fun BrowseSettingsPage(onBack: () -> Unit) {
             }
         }
 
-        CollapsibleNote(
-            "重新渲染与重新联网",
-            "仅地址、浏览加速开关、抓取器变更会重新联网。" +
-                "解析引擎、图片方式、主题属于同一份内容更换处理方式：" +
-                "使用内存中的原始 HTML（最多保留 3 页）重新渲染，不发起网络请求。" +
-                "顶栏「刷新」是唯一强制重新联网入口；页脚标签显示本次为抓取或复用缓存。"
-        )
 
-        CollapsibleNote(
-            "图片缓存规则",
-            "缓存文件名按图片地址哈希生成，地址未变时仅通过 7 天过期机制重新获取。" +
-                "每次读取均核对文件头魔数，写入中断产生的不完整文件会被删除并重新获取。" +
-                "同一页面内并发请求同一图片仅联网一次；单页最多并发获取 4 张图片，" +
-                "避免请求过多被镜像站限流；单张超过 2MB 不获取。" +
-                "「清图片缓存」与「清解析历史」相互独立。"
-        )
 
-        CollapsibleNote(
-            "本地缓存模式说明",
-            "图片内联为 base64 会占用正文预算，长页面尾部内容可能缺失，且图片获取串行在渲染路径上。" +
-                "本地缓存模式下 HTML 仅写入 https://" + GhView.IMG_HOST + "/<hash> 虚拟地址，" +
-                "字节按需获取（先查缓存，未命中时联网）。该域名不存在，请求全部由本地应答，" +
-                "页面保持零外部请求。"
-        )
 
         GhCard(Modifier.fillMaxWidth()) {
             RadioGroup(
@@ -219,22 +179,6 @@ fun BrowseSettingsPage(onBack: () -> Unit) {
             }
         }
 
-        CollapsibleNote(
-            "内置 curl / wget 说明",
-            "curl / wget 为静态编译的可执行文件，重命名为 libcurl.so / libwget.so 置于 jniLibs/arm64-v8a，" +
-                "安装时由系统解压至 nativeLibraryDir，应用从该目录执行（应用自有目录被 SELinux 禁止 exec）。" +
-                "非 arm64 机型无内置二进制，自动改用本机版本，界面显示当前来源。\n" +
-                "内置版本：curl 8.11.0（上游自 8.17 起不再发布 aarch64 静态版）、wget " +
-                    Fetcher.BUNDLED_WGET_VERSION + "（musl 交叉编译，静态链接 OpenSSL 3.5.9 与 zlib 1.3.2）。" +
-                "许可证与源码出处见「设置 → 开源许可」。\n" +
-                "证书：静态编译的工具不含系统信任库（Android 信任库位于 /apex，非其默认识别的 PEM 路径），" +
-                "内置版本显式加载应用自带根证书包（122 张，与 aria2 同一份，按应用版本重新解压）。" +
-                "校验完整启用，自签名、过期、域名不符的证书均被拒绝。本机版本使用系统 CA 路径，无需该参数。\n" +
-                "调用方式：一律使用参数数组，URL 作为单个 argv 传入，不拼接 shell 字符串；" +
-                "屏蔽 IPv6 字面量与十进制、十六进制回环地址；curl 固定 --proto 与 --proto-redir 仅允许跳转至 https；" +
-                "wget 追加 --no-config，避免用户 \$HOME/.wgetrc 改变抓取行为。退出浏览页时终止运行中的子进程。\n" +
-                "代价：每次调用为新进程与新 TCP 连接，不复用 OkHttp 连接池；失败时自动回落内置通道。"
-        )
 
         GhCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -246,11 +190,6 @@ fun BrowseSettingsPage(onBack: () -> Unit) {
                         Settings.put(ctx, "historyOn", if (it) "1" else "0")
                     })
                 }
-                Text(
-                    "启用后解析器页记录已解析的仓库（最多 " + History.MAX + " 条，同一仓库保留最新一次），" +
-                        "点击历史条目可重新解析。关闭仅停止后续记录，不清除已存数据。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
 

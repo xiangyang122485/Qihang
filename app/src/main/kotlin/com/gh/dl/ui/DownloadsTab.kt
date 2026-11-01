@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -67,6 +68,8 @@ fun DownloadsTab() {
     val ctx = LocalContext.current
     var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showLink by remember { mutableStateOf<String?>(null) }
+    var pendingDelete by remember { mutableStateOf<DlJob?>(null) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
 
     val anyRunning = CloneJob.running || vmDownloads.downloads.any { it.running }
     LaunchedEffect(anyRunning) {
@@ -211,6 +214,15 @@ fun DownloadsTab() {
                                         Icon(Icons.Filled.Pause, contentDescription = "暂停")
                                     }
                                 }
+                                if (!vmDownloads.dlMultiSelect) {
+                                    IconButton(
+                                        onClick = { pendingDelete = job },
+                                        modifier = Modifier.width(28.dp).height(28.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "删除",
+                                            tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
                             }
                             Spacer(Modifier.height(6.dp))
                             // 已完成 → 显示满格（停止动画）；已知总大小 → 显示真实进度；
@@ -314,7 +326,7 @@ fun DownloadsTab() {
             if (vmDownloads.downloads.isEmpty() && !CloneJob.running && CloneJob.result.isBlank()) {
                 item {
                     Text(
-                        "暂无下载任务。在「解析器」中解析 GitHub 链接后，即可下载 Release 中的文件。",
+                        "暂无下载任务",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -332,7 +344,7 @@ fun DownloadsTab() {
                 TextButton(onClick = { vmDownloads.toggleDlAll() }) {
                     Text("全选", color = MaterialTheme.colorScheme.onError, fontSize = 13.sp)
                 }
-                TextButton(onClick = { vmDownloads.deleteSelectedDownloads(ctx) }) {
+                TextButton(onClick = { confirmBatchDelete = true }) {
                     Text("删除(${vmDownloads.dlSel.size})", color = MaterialTheme.colorScheme.onError, fontSize = 13.sp)
                 }
                 Spacer(Modifier.weight(1f))
@@ -346,13 +358,43 @@ fun DownloadsTab() {
         }
     }
 
+    // 单条删除二次确认：避免误删进行/已下载任务
+    pendingDelete?.let { job ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除任务") },
+            text = { Text("确定删除「${job.name}」吗？\n进行中的任务将被停止。") },
+            confirmButton = {
+                Button(onClick = { vmDownloads.deleteDownload(ctx, job); pendingDelete = null }) {
+                    Text("删除", color = MaterialTheme.colorScheme.onError)
+                }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } }
+        )
+    }
+
+    // 批量删除二次确认
+    if (confirmBatchDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmBatchDelete = false },
+            title = { Text("批量删除") },
+            text = { Text("确定删除选中的 ${vmDownloads.dlSel.size} 项吗？") },
+            confirmButton = {
+                Button(onClick = {
+                    vmDownloads.deleteSelectedDownloads(ctx)
+                    confirmBatchDelete = false
+                }) { Text("删除", color = MaterialTheme.colorScheme.onError) }
+            },
+            dismissButton = { TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") } }
+        )
+    }
+
     if (showLink != null) {
         AlertDialog(
             onDismissRequest = { showLink = null },
             title = { Text("文件直链") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("长按复制，或点下方按钮复制：", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(showLink ?: "", fontSize = 12.sp)
                 }
             },
@@ -377,8 +419,7 @@ fun DownloadsTab() {
             title = { Text("请先选择下载位置") },
             text = {
                 Text(
-                    "下载需经系统文件选择器（SAF）授权文件夹，应用仅写入该目录，" +
-                        "未授权时不会自动下载到私有目录。请在「设置 → 下载」选择文件夹。",
+                    "请先在「设置 → 下载」选择下载文件夹。",
                     fontSize = 13.sp
                 )
             },

@@ -76,6 +76,11 @@ class SettingsViewModel : ViewModel() {
     /** 下载加速前缀列表（本地持久保存） */
     val accelPrefixes = mutableStateListOf<String>()
 
+    /** 把内存前缀列表同步到 data 层可读的全局池，供加速前缀自动故障切换使用 */
+    private fun syncAccelPool() {
+        AppState.accelPool = accelPrefixes.toList()
+    }
+
     /** 浏览加速的网页镜像站列表（本地持久保存；空列表时界面按内置默认显示） */
     val browseMirrors = mutableStateListOf<String>()
 
@@ -113,6 +118,7 @@ class SettingsViewModel : ViewModel() {
         parser.source = Settings.get(ctx, "source", "official")
         parser.domestic = Settings.get(ctx, "domestic", "tuna")
         search.searchSource = Settings.get(ctx, "searchSource", "github")
+        search.searchHistory = Settings.loadSearchHistory(ctx)
         search.githubIndexOn = Settings.get(ctx, "githubIndexOn", "1") != "0"
         sshChannel = Settings.get(ctx, "sshChannel", "https")
         cloneOn = Settings.get(ctx, "cloneOn", "1") != "0"
@@ -126,6 +132,7 @@ class SettingsViewModel : ViewModel() {
             .filter { it.isNotBlank() }.distinct()
         accelPrefixes.clear()
         accelPrefixes.addAll(normalizedSaved)
+        syncAccelPool()
         if (normalizedSaved != storedPrefixes) Settings.saveAccelPrefixes(ctx, normalizedSaved)
         // 旧版「添加前缀」只写了内存里的 custom，没有落盘；进程重启后 custom 变空、
         // 前缀列表却仍在，表现为「加速前缀设置过但完全不起作用」。此处自动恢复第一个；
@@ -243,6 +250,7 @@ class SettingsViewModel : ViewModel() {
             }
         }
         Settings.saveAccelPrefixes(ctx, accelPrefixes.toList())
+        syncAccelPool()
         // 首次添加时直接生效并落盘（旧实现只写内存，重启即丢失）
         if (custom.isBlank() && accelPrefixes.isNotEmpty()) {
             activatePrefix(ctx, accelPrefixes.first())
@@ -253,12 +261,14 @@ class SettingsViewModel : ViewModel() {
     fun removeAccelPrefix(ctx: Context, p: String) {
         accelPrefixes.remove(p)
         Settings.saveAccelPrefixes(ctx, accelPrefixes.toList())
+        syncAccelPool()
     }
 
     /** 清空所有前缀并持久保存 */
     fun clearAccelPrefixes(ctx: Context) {
         accelPrefixes.clear()
         Settings.saveAccelPrefixes(ctx, emptyList())
+        syncAccelPool()
     }
 
     /** 浏览镜像站：追加（去重）并持久保存，同时同步给抓取层 */
